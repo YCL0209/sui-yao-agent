@@ -1,0 +1,18 @@
+{
+  "name": "sui-yao-agent",
+  "version": "3.0.0",
+  "description": "穗鈅助手 — 獨立 AI Agent 平台",
+  "main": "src/config.js",
+  "scripts": {
+    "validate": "node scripts/validate-skills.js",
+    "start": "node src/bot-server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "mongodb": "^6.12.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "private": true
+}
