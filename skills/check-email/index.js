@@ -135,15 +135,12 @@ function filterNewEmails(threads, state) {
 function formatSummary(newEmails) {
   const lines = [];
   lines.push(`📬 ${newEmails.length} 封新未讀信件：`);
-  lines.push('');
-  lines.push('| 日期 | 寄件人 | 主旨 |');
-  lines.push('|------|--------|------|');
 
   for (const email of newEmails) {
     const date = email.date || '未知';
-    const from = (email.from || '未知').replace(/[|]/g, '\\|');
-    const subject = (email.subject || '(無主旨)').replace(/[|]/g, '\\|');
-    lines.push(`| ${date} | ${from} | ${subject} |`);
+    const from = email.from || '未知';
+    const subject = email.subject || '(無主旨)';
+    lines.push(`\n📩 ${subject}\n   寄件人：${from}\n   日期：${date}`);
   }
 
   return lines.join('\n');
@@ -157,8 +154,7 @@ function sendTelegram(botToken, chatId, text) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
       chat_id: chatId,
-      text,
-      parse_mode: 'Markdown'
+      text
     });
 
     const req = https.request({

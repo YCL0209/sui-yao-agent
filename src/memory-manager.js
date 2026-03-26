@@ -26,12 +26,49 @@ const config = require('./config');
 async function saveMemory(userId, content, source = '對話推斷', category = 'fact') {
   const db = await mongo.getDb();
 
-  // 生成 embedding
-  let embedding = [];
-  try {
-    embedding = await llm.getEmbedding(content);
-  } catch (err) {
-    console.warn('[memory-manager] embedding 生成失敗，存入空向量:', err.message);
+  // 去重：檢查是否已有相同或高度相似的記憶
+  const doc = await db.collection('memories').findOne({ userId });
+  if (doc && doc.memories && doc.memories.length > 0) {
+    // 1. 完全相同文字 → 跳過
+    const exactMatch = doc.memories.find(m => m.content.trim() === content.trim());
+    if (exactMatch) {
+      console.log('[memory-manager] 跳過重複記憶（完全相同）:', content.substring(0, 40));
+      return exactMatch.id;
+    }
+
+    // 2. 語意相似度 > 0.9 → 跳過
+    let newEmbedding;
+    try {
+      newEmbedding = await llm.getEmbedding(content);
+    } catch (_) {
+      newEmbedding = null;
+    }
+
+    if (newEmbedding) {
+      const { cosineSimilarity } = require('./memory-search');
+      for (const m of doc.memories) {
+        if (m.embedding && m.embedding.length > 0) {
+          const sim = cosineSimilarity(newEmbedding, m.embedding);
+          if (sim > 0.9) {
+            console.log(`[memory-manager] 跳過重複記憶（相似度 ${sim.toFixed(3)}）:`, content.substring(0, 40));
+            return m.id;
+          }
+        }
+      }
+
+      // embedding 已生成，直接用
+      var embedding = newEmbedding;
+    }
+  }
+
+  // 生成 embedding（如果上面沒有生成過）
+  if (typeof embedding === 'undefined') {
+    embedding = [];
+    try {
+      embedding = await llm.getEmbedding(content);
+    } catch (err) {
+      console.warn('[memory-manager] embedding 生成失敗，存入空向量:', err.message);
+    }
   }
 
   const memoryDoc = {

@@ -235,6 +235,15 @@ async function chat(options) {
     return ollamaChat({ ...options, model });
   }
 
+  // TODO: Ollama 降級 — 目前 8B 模型太小，帶 tools + 長 prompt 會卡住
+  // 升級硬體或換更大的本地模型後再啟用
+  // try {
+  //   return await openaiChat({ ...options, model });
+  // } catch (err) {
+  //   const fallbackModel = `ollama/${config.ollama.model}`;
+  //   console.warn(`[llm-adapter] OpenAI 呼叫失敗 (${err.message})，降級到 ${fallbackModel}`);
+  //   return ollamaChat({ ...options, model: fallbackModel });
+  // }
   return openaiChat({ ...options, model });
 }
 

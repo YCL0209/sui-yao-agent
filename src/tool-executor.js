@@ -65,7 +65,7 @@ async function execute(toolCall, context = {}) {
   const startMs = Date.now();
 
   try {
-    const result = await skill.run(args, context);
+    const result = await skill.run(args, { ...context, llm: require('./llm-adapter') });
     const durationMs = Date.now() - startMs;
 
     // 自動寫入 daily-log
@@ -84,6 +84,8 @@ async function execute(toolCall, context = {}) {
       success: result.success !== false,
       data: result.data,
       summary: result.summary || '',
+      reply_markup: result.reply_markup || null,
+      localPaths: result.localPaths || null,
       skillName: funcName,
       durationMs,
     };

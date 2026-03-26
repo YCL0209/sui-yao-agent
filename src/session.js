@@ -63,6 +63,11 @@ function trimHistory(messages, userId, llmAdapter) {
     kept.unshift(history[i]);
   }
 
+  // 至少保留最後一條用戶訊息
+  if (kept.length === 0 && history.length > 0) {
+    kept.push(history[history.length - 1]);
+  }
+
   // 如果有被截斷，加上提示
   if (kept.length < history.length) {
     const droppedCount = history.length - kept.length;
@@ -116,19 +121,23 @@ async function preFlush(userId, history, llmAdapter) {
       const memoryLines = response.content.match(/\[記憶\]\s*(.+)/g) || [];
       const logLines = response.content.match(/\[日誌\]\s*(.+)/g) || [];
 
+      // fire-and-forget，不阻塞截斷流程
+      const writes = [];
       for (const line of memoryLines) {
         const content = line.replace('[記憶]', '').trim();
         if (content) {
-          await memoryManager.saveMemory(userId, content, 'pre-flush');
+          writes.push(memoryManager.saveMemory(userId, content, 'pre-flush')
+            .catch(err => console.error('[session] pre-flush 記憶存入失敗:', err.message)));
         }
       }
-
       for (const line of logLines) {
         const content = line.replace('[日誌]', '').trim();
         if (content) {
-          await dailyLog.appendLog(userId, { type: 'note', content });
+          writes.push(dailyLog.appendLog(userId, { type: 'note', content })
+            .catch(err => console.error('[session] pre-flush 日誌存入失敗:', err.message)));
         }
       }
+      Promise.all(writes).catch(() => {});
 
       const saved = memoryLines.length + logLines.length;
       if (saved > 0) {
@@ -160,8 +169,10 @@ async function trimHistoryWithFlush(messages, userId, llmAdapter) {
   const systemTokens = estimateTokens(systemMsg.content);
   const historyTokens = history.reduce((sum, m) => sum + estimateTokens(m.content), 0);
 
-  // 如果接近上限，先 pre-flush
-  if (historyTokens > tokenLimit * flushThreshold) {
+  // 只要截斷會發生，就先沖刷
+  const totalTokens = systemTokens + historyTokens;
+  console.log('[session] flush check:', totalTokens, '/', tokenLimit);
+  if (totalTokens > tokenLimit) {
     await preFlush(userId, history, llmAdapter);
   }
 

@@ -186,54 +186,29 @@ async function generateAndSendPDF(orderId, orderNumber, type, order, context) {
     console.log(`[PDF] Generated ${imageFiles.length} image(s):`, imageFiles);
 
     if (imageFiles.length === 0) {
-      return `${typeName}生成成功，但圖片轉換失敗。\nPDF 位置：${pdfPath}`;
-    }
-
-    // Build public URLs
-    const publicBaseUrl = config.canvas.publicUrl;
-    const userId = context?.userId || context?.channelUserId;
-
-    const imageUrls = [];
-    for (let i = 0; i < imageFiles.length; i++) {
-      const imgPath = imageFiles[i];
-      const filename = path.basename(imgPath);
-      const publicUrl = `${publicBaseUrl}/${filename}`;
-      imageUrls.push({
-        url: publicUrl,
-        filename: filename,
-        caption: i === 0
-          ? `${typeName} - ${orderNumber}\n客戶：${order.customerName}\n(第 ${i + 1}/${imageFiles.length} 頁)`
-          : `(第 ${i + 1}/${imageFiles.length} 頁)`
-      });
-
-      console.log(`[PDF] Image ${i + 1}/${imageFiles.length}: ${publicUrl}`);
-    }
-
-    if (userId) {
-      const response = {
-        success: true,
-        action: 'send_images',
-        documentType: typeName,
-        orderNumber: orderNumber,
-        customerName: order.customerName,
-        totalPages: imageFiles.length,
-        userId: userId,
-        channel: 'line',
-        images: imageUrls.map(img => ({
-          url: img.url,
-          caption: img.caption
-        }))
+      return {
+        text: `${typeName}生成成功，但圖片轉換失敗。\nPDF 位置：${pdfPath}`,
+        localPaths: [],
       };
-
-      return JSON.stringify(response, null, 2);
-    } else {
-      return `✅ ${typeName}已生成\n`
-        + `📋 ${orderNumber}\n`
-        + `👤 ${order.customerName}\n`
-        + `📄 共 ${imageFiles.length} 頁\n\n`
-        + `⚠️ 無法自動發送（缺少用戶 ID）\n`
-        + `📄 PDF 位置：${pdfPath}`;
     }
+
+    // 組裝圖片資訊（含本地路徑）
+    const images = imageFiles.map((imgPath, i) => ({
+      localPath: imgPath,
+      caption: i === 0
+        ? `${typeName} - ${orderNumber}\n客戶：${order.customerName}\n(第 ${i + 1}/${imageFiles.length} 頁)`
+        : `(第 ${i + 1}/${imageFiles.length} 頁)`,
+    }));
+
+    console.log(`[PDF] Generated ${images.length} image(s):`, images.map(i => i.localPath));
+
+    return {
+      text: `✅ ${typeName}已生成\n📋 ${orderNumber}\n👤 ${order.customerName}\n📄 共 ${images.length} 頁`,
+      localPaths: images,
+      documentType: typeName,
+      orderNumber,
+      customerName: order.customerName,
+    };
 
   } catch (error) {
     console.error('[PDF] Generation error:', error);
@@ -268,7 +243,12 @@ module.exports = {
       ? `生成${args.type === 'quotation' ? '報價單' : args.type === 'purchase' ? '採購單' : '銷貨單'} ${args.orderNumber}`
       : args.orderNumber;
     const result = await generatePDF(message, context || {});
-    return { success: true, data: result, summary: result };
+    // generateAndSendPDF 現在回傳物件 { text, localPaths, ... }
+    if (result && typeof result === 'object' && result.text) {
+      return { success: true, data: result.text, summary: result.text, localPaths: result.localPaths };
+    }
+    // 其他情況（parseMessage 階段的字串回傳）
+    return { success: true, data: result, summary: typeof result === 'string' ? result : '' };
   },
 
   // Legacy exports

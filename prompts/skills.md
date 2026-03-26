@@ -8,14 +8,14 @@
   - `chatId`: Telegram chat ID（notify 模式必填）
 
 ## create-order
-建立 ERP 訂單（解析用戶輸入 → 查客戶 → 確認 → 建單）
+建立銷售/採購訂單（互動式按鈕流程）。
+
+**觸發時機**：用戶提到「建立訂單」、「建單」、「開單」、「下訂單」時，呼叫此 skill。
+- 資訊不足（只說「建立訂單」）→ 傳 message 參數，skill 會用按鈕引導
+- 資訊完整（「幫王大明建一張銷售單，A4紙 100包 150元」）→ 傳 message 參數，skill 會直接跳到確認
 
 參數:
-  - `customerName`: 客戶名稱
-  - `items`: 品項列表 [{name, quantity, price}]
-  - `address`: 送貨地址
-  - `note`: 訂單備註
-  - `message`: 自然語言訂單描述（會自動解析）
+  - `message`: 用戶的原始訊息（必填）
 
 ## generate-pdf
 從 ERP 訂單生成 PDF 單據（報價單/採購單/銷貨單）

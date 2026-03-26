@@ -24,6 +24,19 @@ async function appendLog(userId, entry) {
   const db = await mongo.getDb();
   const today = new Date().toISOString().split('T')[0];
 
+  // 去重：同一天內完全相同的 content → 跳過
+  if (entry.content) {
+    const existing = await db.collection('daily_logs').findOne({
+      userId,
+      date: today,
+      'entries.content': entry.content.trim(),
+    });
+    if (existing) {
+      console.log('[daily-log] 跳過重複日誌:', entry.content.substring(0, 40));
+      return;
+    }
+  }
+
   await db.collection('daily_logs').updateOne(
     { userId, date: today },
     {

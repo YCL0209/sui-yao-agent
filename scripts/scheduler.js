@@ -13,8 +13,71 @@ if (!process.env.HOME) {
   process.env.HOME = '/Users/liaoyacheng';
 }
 
+const https = require('https');
 const mongo = require('../lib/mongodb-tools');
 const { runNotify } = require('../skills/check-email');
+const appConfig = require('../src/config');
+const RETENTION_DAYS = appConfig.memory?.dailyLogRetentionDays || 30;
+
+// ========================================
+// Telegram 推播（輕量版，不依賴 node-telegram-bot-api）
+// ========================================
+
+function sendTelegram(chatId, text) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({ chat_id: chatId, text });
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${appConfig.telegram.botToken}/sendMessage`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      }
+    }, (res) => {
+      let body = '';
+      res.on('data', d => body += d);
+      res.on('end', () => resolve(JSON.parse(body)));
+    });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ========================================
+// Reminder: 計算下次觸發時間
+// ========================================
+
+function calcNextRemindAt(reminder) {
+  const now = new Date();
+  const repeat = reminder.repeat;
+  if (!repeat) return null;
+
+  switch (repeat.type) {
+    case 'daily': {
+      const next = new Date(reminder.remindAt);
+      while (next <= now) next.setDate(next.getDate() + 1);
+      return next;
+    }
+    case 'weekly': {
+      const next = new Date(reminder.remindAt);
+      while (next <= now) next.setDate(next.getDate() + 7);
+      return next;
+    }
+    case 'monthly': {
+      const next = new Date(reminder.remindAt);
+      while (next <= now) next.setMonth(next.getMonth() + 1);
+      return next;
+    }
+    case 'interval': {
+      const ms = repeat.intervalMs || 3600000;
+      return new Date(now.getTime() + ms);
+    }
+    default:
+      return null;
+  }
+}
 
 // ========================================
 // Handler Registry
@@ -25,6 +88,81 @@ const handlers = {
     const chatId = config.telegramChatId;
     if (!chatId) throw new Error('missing telegramChatId in config');
     return await runNotify(chatId);
+  },
+
+  'reminder': async (taskConfig, task) => {
+    const db = await mongo.getDb();
+
+    // 查詢到期且 pending 的 reminders
+    const now = new Date();
+    const query = {
+      status: 'pending',
+      remindAt: { $lte: now }
+    };
+    if (taskConfig.userId) {
+      query.userId = taskConfig.userId;
+    }
+
+    const reminders = await db.collection('reminders')
+      .find(query).toArray();
+
+    if (reminders.length === 0) {
+      return { ok: true, count: 0, notified: false };
+    }
+
+    let delivered = 0;
+    for (const rem of reminders) {
+      // 發送 Telegram 提醒
+      const chatId = taskConfig.telegramChatId;
+      if (chatId) {
+        await sendTelegram(chatId, `⏰ 提醒：${rem.content}`);
+      }
+
+      if (rem.repeat) {
+        // 重複提醒：更新 remindAt 到下次觸發
+        const nextAt = calcNextRemindAt(rem);
+        if (nextAt) {
+          await db.collection('reminders').updateOne(
+            { _id: rem._id },
+            { $set: { remindAt: nextAt, deliveredAt: now } }
+          );
+        } else {
+          await db.collection('reminders').updateOne(
+            { _id: rem._id },
+            { $set: { status: 'done', deliveredAt: now } }
+          );
+        }
+      } else {
+        // 單次提醒：標記完成
+        await db.collection('reminders').updateOne(
+          { _id: rem._id },
+          { $set: { status: 'done', deliveredAt: now } }
+        );
+      }
+      delivered++;
+    }
+
+    return { ok: true, count: delivered, notified: delivered > 0 };
+  },
+
+  'archive-logs': async () => {
+    const db = await mongo.getDb();
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - RETENTION_DAYS);
+    const cutoffStr = cutoffDate.toISOString().split('T')[0];
+
+    const oldLogs = await db.collection('daily_logs')
+      .find({ date: { $lt: cutoffStr } }).toArray();
+
+    if (oldLogs.length === 0) {
+      return { ok: true, archived: 0, notified: false };
+    }
+
+    await db.collection('archived_daily_logs').insertMany(oldLogs);
+    const ids = oldLogs.map(l => l._id);
+    const result = await db.collection('daily_logs').deleteMany({ _id: { $in: ids } });
+
+    return { ok: true, archived: result.deletedCount, notified: false };
   }
 };
 
@@ -59,10 +197,20 @@ async function main() {
       let summary = '';
 
       try {
-        result = await handler(task.config || {});
-        summary = result.notified
-          ? `pushed ${result.newCount} new emails`
-          : 'no new emails';
+        result = await handler(task.config || {}, task);
+        if (task.type === 'reminder') {
+          summary = result.count > 0
+            ? `delivered ${result.count} reminders`
+            : 'no pending reminders';
+        } else if (task.type === 'archive-logs') {
+          summary = result.archived > 0
+            ? `archived ${result.archived} old logs`
+            : 'no logs to archive';
+        } else {
+          summary = result.notified
+            ? `pushed ${result.newCount} new emails`
+            : 'no new emails';
+        }
       } catch (err) {
         status = 'error';
         summary = err.message;
