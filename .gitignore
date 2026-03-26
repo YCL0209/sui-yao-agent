@@ -19,6 +19,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Reference (外部參考資料)
+claude-code-infrastructure-showcase-main/
+
 # Temp
 /tmp/
 *.log
