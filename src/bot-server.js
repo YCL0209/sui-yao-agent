@@ -325,8 +325,79 @@ function startBot() {
     const userId = `telegram:${chatId}`;
     const text = msg.text;
 
-    // 忽略非文字訊息
-    if (!text) return;
+    // ---- 非文字訊息處理（PDF / 圖片 → 自動建單） ----
+    if (!text) {
+      if (msg.document || msg.photo) {
+        const prev = chatLocks.get(chatId) || Promise.resolve();
+        const current = prev.then(async () => {
+          try {
+            await bot.sendChatAction(chatId, 'typing');
+            const docParser = require('./document-parser');
+            const fs = require('fs');
+            const path = require('path');
+            const tmpDir = '/tmp/sui-yao-uploads';
+            if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+            let extractedText = '';
+            let sourceType = '';
+
+            if (msg.document && msg.document.mime_type === 'application/pdf') {
+              // PDF 處理
+              sourceType = 'PDF';
+              const fileLink = await bot.getFileLink(msg.document.file_id);
+              const res = await fetch(fileLink);
+              const buffer = Buffer.from(await res.arrayBuffer());
+              const filePath = path.join(tmpDir, `${chatId}-${Date.now()}.pdf`);
+              fs.writeFileSync(filePath, buffer);
+              extractedText = await docParser.parsePDF(filePath);
+              fs.unlinkSync(filePath);
+            } else if (msg.photo) {
+              // 圖片處理（取最大解析度）
+              sourceType = '圖片';
+              const photo = msg.photo[msg.photo.length - 1];
+              const fileLink = await bot.getFileLink(photo.file_id);
+              const res = await fetch(fileLink);
+              const buffer = Buffer.from(await res.arrayBuffer());
+              const filePath = path.join(tmpDir, `${chatId}-${Date.now()}.jpg`);
+              fs.writeFileSync(filePath, buffer);
+              extractedText = await docParser.parseImage(filePath);
+              fs.unlinkSync(filePath);
+            } else {
+              await bot.sendMessage(chatId, '目前只支援 PDF 和圖片檔案。');
+              return;
+            }
+
+            if (!extractedText || extractedText.trim().length < 10) {
+              await bot.sendMessage(chatId, `無法從${sourceType}中提取有效內容。`);
+              return;
+            }
+
+            await bot.sendMessage(chatId, `📄 已接收${sourceType}，正在解析...`);
+
+            // LLM 結構化解析
+            const llmAdapter = require('./llm-adapter');
+            const parsed = await docParser.extractOrderFromText(extractedText, llmAdapter);
+
+            if (!parsed || (!parsed.items?.length && !parsed.customerName)) {
+              await bot.sendMessage(chatId, `無法從${sourceType}中辨識訂單資訊。\n\n提取的內容：\n${extractedText.substring(0, 500)}`);
+              return;
+            }
+
+            // 走建單流程
+            const result = await createOrderSkill.startFromParsed(chatId, parsed, { userId, chatId, llm: llmAdapter });
+            if (result) {
+              await sendSkillResult(bot, chatId, result);
+            }
+          } catch (err) {
+            console.error(`[bot-server] 文件處理失敗:`, err);
+            await bot.sendMessage(chatId, `處理失敗：${err.message}`);
+            await notifyError(bot, err, `Document/Photo\nChat: ${chatId}`);
+          }
+        });
+        chatLocks.set(chatId, current.catch(() => {}));
+      }
+      return;
+    }
 
     // reset 指令（同時清除建單 session）
     if (text === '/reset' || text === '/new') {

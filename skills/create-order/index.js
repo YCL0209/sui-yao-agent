@@ -709,6 +709,86 @@ module.exports = {
     return typeSelectionResponse();
   },
 
+  /**
+   * 從解析好的資料直接建單（PDF/圖片/Email 用）
+   * @param {number} chatId
+   * @param {Object} parsed - { type, customerName, items: [{name, quantity, price}], note }
+   * @param {Object} context - { userId, chatId, llm }
+   */
+  async startFromParsed(chatId, parsed, context) {
+    const startStep = determineStartStep(parsed);
+    console.log(`[Order] startFromParsed: startStep=${startStep}`, parsed);
+
+    const sess = createSession(chatId, {
+      step: startStep,
+      type: parsed?.type || null,
+      items: [],
+      note: parsed?.note || null,
+    });
+
+    // 品項 RAG 比對
+    if (parsed?.items && parsed.items.length > 0) {
+      try {
+        const productSearch = require('../../src/product-search');
+        const enrichedItems = [];
+        for (const item of parsed.items) {
+          const results = await productSearch.searchProduct(item.name);
+          const classified = productSearch.classifyResults(results);
+          if (classified.autoMatch.length > 0) {
+            const matched = classified.autoMatch[0].product;
+            enrichedItems.push({
+              name: matched.name,
+              productCode: matched.productId,
+              quantity: item.quantity || 1,
+              price: item.price || matched.unitPrice || 0,
+              unit: matched.unit || '個',
+              _matched: true,
+            });
+            if (item.name !== matched.name) {
+              productSearch.learnAlias(matched.productId, item.name).catch(() => {});
+            }
+          } else {
+            enrichedItems.push({
+              name: item.name,
+              productCode: null,
+              quantity: item.quantity || 1,
+              price: item.price || 0,
+              unit: '個',
+              _matched: false,
+            });
+          }
+        }
+        sess.items = enrichedItems;
+      } catch (err) {
+        console.warn('[Order] startFromParsed RAG 失敗:', err.message);
+        sess.items = parsed.items.map(i => ({ ...i, quantity: i.quantity || 1, price: i.price || 0 }));
+      }
+    }
+
+    // 查客戶
+    if (parsed?.customerName) {
+      const result = await searchCustomers(parsed.customerName);
+      if (result.success && result.matches.length >= 1) {
+        sess.customer = result.matches[0];
+      }
+    }
+
+    // 根據有多少資訊決定回什麼
+    if (sess.customer && sess.items.length > 0) {
+      sess.step = 'confirm';
+      return orderConfirmResponse(sess);
+    }
+    if (sess.type && sess.customer) {
+      sess.step = 'items';
+      return askItemsResponse();
+    }
+    if (sess.type) {
+      sess.step = 'customer';
+      return askCustomerResponse();
+    }
+    return typeSelectionResponse();
+  },
+
   // Export for bot-server
   orderSessions,
   handleCallback,
