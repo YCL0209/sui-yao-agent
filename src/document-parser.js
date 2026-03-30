@@ -16,10 +16,43 @@ const config = require('./config');
 // ============================================================
 
 async function parsePDF(filePath) {
+  // 先嘗試文字提取
   const pdfParse = require('pdf-parse');
   const buffer = fs.readFileSync(filePath);
   const data = await pdfParse(buffer);
-  return data.text || '';
+  const text = (data.text || '').trim();
+
+  if (text.length > 20) {
+    return text; // 有足夠文字，直接回傳
+  }
+
+  // 文字太少（可能是掃描型 PDF）→ 轉圖片 → vision 辨識
+  console.log('[document-parser] PDF 文字不足，轉圖片辨識...');
+  const { execSync } = require('child_process');
+  const tmpDir = '/tmp/sui-yao-pdf-img';
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+  const prefix = path.join(tmpDir, `pdf-${Date.now()}`);
+  execSync(`pdftoppm -png -r 200 -l 3 "${filePath}" "${prefix}"`); // 只轉前 3 頁
+
+  const files = fs.readdirSync(tmpDir)
+    .filter(f => f.startsWith(path.basename(prefix)) && f.endsWith('.png'))
+    .sort()
+    .map(f => path.join(tmpDir, f));
+
+  if (files.length === 0) {
+    return text; // 轉換失敗，回傳原本的少量文字
+  }
+
+  // 用第一頁做 vision 辨識（通常報價單資訊在第一頁）
+  const result = await parseImage(files[0]);
+
+  // 清理暫存圖片
+  for (const f of files) {
+    try { fs.unlinkSync(f); } catch (_) {}
+  }
+
+  return result;
 }
 
 // ============================================================
