@@ -13,6 +13,9 @@ const llm = require('./llm-adapter');
 const memoryManager = require('./memory-manager');
 const dailyLog = require('./daily-log');
 
+// preFlush 防重複鎖
+const flushInProgress = new Set();
+
 // ============================================================
 // Token 估算
 // ============================================================
@@ -96,6 +99,13 @@ async function preFlush(userId, history, llmAdapter) {
 
   if (!history || history.length === 0) return;
 
+  // 防重複：同一用戶不會同時跑兩次 flush
+  if (flushInProgress.has(userId)) {
+    console.log('[session] preFlush 已在執行中，跳過:', userId);
+    return;
+  }
+  flushInProgress.add(userId);
+
   const flushMessages = [
     {
       role: 'system',
@@ -146,7 +156,8 @@ async function preFlush(userId, history, llmAdapter) {
     }
   } catch (err) {
     console.error('[session] pre-flush 失敗:', err.message);
-    // pre-flush 失敗不應該阻擋截斷
+  } finally {
+    flushInProgress.delete(userId);
   }
 }
 
@@ -169,11 +180,13 @@ async function trimHistoryWithFlush(messages, userId, llmAdapter) {
   const systemTokens = estimateTokens(systemMsg.content);
   const historyTokens = history.reduce((sum, m) => sum + estimateTokens(m.content), 0);
 
-  // 只要截斷會發生，就先沖刷
+  // 超過閾值時觸發背景 flush（不 await，不阻塞回覆）
   const totalTokens = systemTokens + historyTokens;
   console.log('[session] flush check:', totalTokens, '/', tokenLimit);
-  if (totalTokens > tokenLimit) {
-    await preFlush(userId, history, llmAdapter);
+  if (totalTokens > tokenLimit * flushThreshold) {
+    preFlush(userId, history, llmAdapter).catch(err =>
+      console.error('[session] 背景 preFlush 失敗:', err.message)
+    );
   }
 
   // 然後截斷

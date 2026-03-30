@@ -21,9 +21,26 @@ const config = require('./config');
  * @param {string} userId
  * @param {string} content - 記憶內容
  * @param {string} [source='對話推斷'] - 來源（對話推斷 / 用戶要求 / pre-flush）
- * @param {string} [category='fact'] - 分類（contact / preference / fact / workflow）
+ * @param {Object} [options] - 額外選項 { category, importance }
  */
-async function saveMemory(userId, content, source = '對話推斷', category = 'fact') {
+async function saveMemory(userId, content, source = '對話推斷', options = {}) {
+  // 相容舊呼叫方式：saveMemory(userId, content, source, 'fact')
+  let category, importance;
+  if (typeof options === 'string') {
+    category = options;
+    importance = undefined;
+  } else {
+    category = options.category || 'fact';
+    importance = options.importance;
+  }
+
+  // 預設 importance 依 source 判斷
+  if (importance === undefined) {
+    if (source === '用戶要求') importance = 0.8;
+    else if (source === 'LLM 回覆') importance = 0.6;
+    else if (source === 'pre-flush') importance = 0.5;
+    else importance = 0.5;
+  }
   const db = await mongo.getDb();
 
   // 去重：檢查是否已有相同或高度相似的記憶
@@ -78,6 +95,10 @@ async function saveMemory(userId, content, source = '對話推斷', category = '
     createdAt: new Date(),
     source,
     embedding,
+    importance,
+    accessCount: 0,
+    lastAccessedAt: null,
+    embeddingModel: `${config.embedding.provider}/${config.embedding.model}`,
   };
 
   await db.collection('memories').updateOne(
