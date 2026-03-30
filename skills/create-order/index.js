@@ -778,13 +778,26 @@ module.exports = {
       sess.step = 'confirm';
       return orderConfirmResponse(sess);
     }
+
+    // 組裝已解析摘要
+    const typeName = sess.type === 'sales' ? '銷售單' : sess.type === 'purchase' ? '採購單' : sess.type === 'quotation' ? '報價單' : '未知';
+    const itemsSummary = sess.items.length > 0
+      ? sess.items.map(i => `  • ${i.name} ×${i.quantity || 1} @${i.price || '?'}`).join('\n')
+      : '（無品項）';
+    const summary = `📄 已從文件解析出：\n`
+      + `類型：${typeName}\n`
+      + (parsed?.customerName ? `文件客戶：${parsed.customerName}\n` : '')
+      + (sess.items.length > 0 ? `品項：\n${itemsSummary}\n` : '')
+      + `\n`;
+
     if (sess.type && sess.customer) {
       sess.step = 'items';
-      return askItemsResponse();
+      return { success: true, data: summary + '請輸入品項：', summary: '等待品項' };
     }
     if (sess.type) {
       sess.step = 'customer';
-      return askCustomerResponse();
+      const notFound = parsed?.customerName ? `⚠️ ERP 找不到「${parsed.customerName}」\n` : '';
+      return { success: true, data: summary + notFound + '請輸入客戶名稱：', summary: '等待客戶' };
     }
     return typeSelectionResponse();
   },
