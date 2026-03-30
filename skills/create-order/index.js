@@ -79,14 +79,17 @@ async function parseOrderWithLLM(message, llm) {
 {
   "type": "sales" 或 "purchase" 或 "quotation" 或 null,
   "customerName": "客戶名稱" 或 null,
-  "items": [{"name": "品名", "quantity": 數量, "price": 單價或0}],
+  "items": [{"name": "品名", "quantity": 數量, "price": 單價或0, "category": "分類"}],
   "note": "備註" 或 null
 }
 
+category 必須是以下之一：電子組件、機械組件、氣動組件、感測器、控制器、緊固件、線材、連接器、照明、其他
+根據品名判斷最合適的分類，無法判斷時用「其他」。
+
 範例：
-- "幫王大明建一張銷售單，A4紙 100包 150元" → {"type":"sales","customerName":"王大明","items":[{"name":"A4紙","quantity":100,"price":150}],"note":null}
+- "幫王大明建一張銷售單，A4紙 100包 150元" → {"type":"sales","customerName":"王大明","items":[{"name":"A4紙","quantity":100,"price":150,"category":"其他"}],"note":null}
 - "建立訂單" → {"type":null,"customerName":null,"items":[],"note":null}
-- "採購單 大明企業 影印紙x50@120" → {"type":"purchase","customerName":"大明企業","items":[{"name":"影印紙","quantity":50,"price":120}],"note":null}
+- "採購單 大明企業 影印紙x50@120" → {"type":"purchase","customerName":"大明企業","items":[{"name":"影印紙","quantity":50,"price":120,"category":"其他"}],"note":null}
 - "出一份報價單給大明企業" → {"type":"quotation","customerName":"大明企業","items":[],"note":null}`
         },
         { role: 'user', content: message }
@@ -630,6 +633,7 @@ async function submitOrderToERP(chatId, sess) {
         quantity: item.quantity,
         unitPrice: item.price || 0,
         unit: item.unit || '個',
+        category: item.category || '其他',
       })),
       taxRate: 5,
       taxType: 'exclusive',
