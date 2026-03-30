@@ -126,31 +126,20 @@ async function extractOrderFromText(text, llm) {
         content: `你是訂單解析器。從以下文字中提取訂單資訊，回傳 JSON。
 只回傳 JSON，不要其他文字。
 
-重要 — 判斷我們公司和對方公司：
-我們公司是「穗鈅科技股份有限公司」。但 OCR 經常誤讀，可能讀成穗鋒、禮鋼、穂鈅、穗瑤、穗堯等。
-判斷規則：文件中會出現兩個公司名（發送方和收件方），其中一個是我們、另一個是對方。
-如果某個公司名跟「穗鈅」的發音或字形接近（兩字中文+科技），那就是我們公司，另一個就是客戶。
-
-type 判斷規則：
-- 買方/收件方是我們 → type = "purchase"（我們向對方採購），customerName = 賣方/發送方
-- 賣方/發送方是我們 → type = "sales" 或 "quotation"，customerName = 買方/收件方
-
 格式：
 {
-  "type": "sales" 或 "purchase" 或 "quotation" 或 null,
-  "customerName": "對方公司/客戶名稱" 或 null,
+  "sender": "發送方/賣方公司名稱",
+  "receiver": "收件方/買方公司名稱",
+  "documentType": "報價單" 或 "採購單" 或 "銷貨單" 或 "訂單" 或 null,
   "items": [{"name": "品名", "quantity": 數量, "price": 單價或0}],
   "note": "備註" 或 null
 }
 
-品項解析規則（非常重要）：
-- PDF 表格提取時欄位常會黏在一起，例如「1T12MLE-21PCS」其實是「項目:1」+「品名:T12MLE-21」+「單位:PCS」
-- 品名清理：去掉開頭的行號數字（如 1、2、3）和結尾的單位（PCS、EA、SET、個、條、組、箱、件、米、M）
-- quantity = 訂購數量（通常是較小的整數，如 1、5、10、100）
-- price = 每單位的單價（通常是較大的數字，如 85、500、1250）
-- 如果一個品項只有一個數字且沒標「數量」，在報價單上通常是單價，數量預設 1
-- 文件常見欄位對應：「數量/QTY」→ quantity，「單價/PRICE/報價」→ price
-- 盡量提取所有品項，品名只保留型號/產品名本身`,
+品項解析規則：
+- 品名只保留型號/產品名，去掉行號和單位
+- quantity = 訂購數量，price = 每單位單價
+- 如果只有一個數字且在報價單上，通常是單價，數量預設 1
+- 盡量提取所有品項`,
       },
       { role: 'user', content: text },
     ],
@@ -159,10 +148,41 @@ type 判斷規則：
 
   const content = (response.content || '').trim();
   const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    return JSON.parse(jsonMatch[0]);
+  if (!jsonMatch) return null;
+
+  const raw = JSON.parse(jsonMatch[0]);
+
+  // 程式碼判斷哪個是我們公司，哪個是客戶
+  const sender = raw.sender || '';
+  const receiver = raw.receiver || '';
+  const aliases = config.company.aliases;
+
+  const senderIsUs = aliases.some(a => sender.includes(a));
+  const receiverIsUs = aliases.some(a => receiver.includes(a));
+
+  let type, customerName;
+  if (receiverIsUs) {
+    // 我們是收件方（買方）→ purchase
+    type = 'purchase';
+    customerName = sender;
+  } else if (senderIsUs) {
+    // 我們是發送方（賣方）→ sales
+    type = 'sales';
+    customerName = receiver;
+  } else {
+    // 都不是我們 → 用 LLM 回傳的 documentType 猜
+    type = raw.documentType === '採購單' ? 'purchase' : raw.documentType === '銷貨單' ? 'sales' : 'quotation';
+    customerName = sender || receiver || null;
   }
-  return null;
+
+  console.log(`[document-parser] 公司判斷: sender="${sender}" receiver="${receiver}" → type=${type} customer=${customerName}`);
+
+  return {
+    type,
+    customerName,
+    items: raw.items || [],
+    note: raw.note || null,
+  };
 }
 
 // ============================================================
