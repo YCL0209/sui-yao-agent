@@ -33,10 +33,10 @@ async function parsePDF(filePath) {
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
   const prefix = path.join(tmpDir, `pdf-${Date.now()}`);
-  execSync(`pdftoppm -png -r 300 -l 3 "${filePath}" "${prefix}"`); // 只轉前 3 頁，300 DPI
+  execSync(`pdftoppm -jpeg -r 250 -l 3 "${filePath}" "${prefix}"`); // JPEG 壓縮，250 DPI
 
   const files = fs.readdirSync(tmpDir)
-    .filter(f => f.startsWith(path.basename(prefix)) && f.endsWith('.png'))
+    .filter(f => f.startsWith(path.basename(prefix)) && (f.endsWith('.jpg') || f.endsWith('.png')))
     .sort()
     .map(f => path.join(tmpDir, f));
 
@@ -63,7 +63,9 @@ async function parseImage(filePath) {
   const imageBuffer = fs.readFileSync(filePath);
   const base64 = imageBuffer.toString('base64');
   const ext = path.extname(filePath).toLowerCase().replace('.', '');
-  const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+  const mimeType = ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+
+  console.log(`[document-parser] parseImage: ${filePath} (${(imageBuffer.length / 1024).toFixed(0)} KB, ${mimeType})`);
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
