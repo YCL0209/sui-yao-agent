@@ -33,7 +33,7 @@ async function parsePDF(filePath) {
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
   const prefix = path.join(tmpDir, `pdf-${Date.now()}`);
-  execSync(`pdftoppm -png -r 200 -l 3 "${filePath}" "${prefix}"`); // 只轉前 3 頁
+  execSync(`pdftoppm -png -r 300 -l 3 "${filePath}" "${prefix}"`); // 只轉前 3 頁，300 DPI
 
   const files = fs.readdirSync(tmpDir)
     .filter(f => f.startsWith(path.basename(prefix)) && f.endsWith('.png'))
@@ -79,7 +79,22 @@ async function parseImage(filePath) {
           content: [
             {
               type: 'text',
-              text: '請辨識這張圖片中的訂單/報價單/採購單內容。提取出客戶名稱、品項（品名、數量、單價）、訂單類型。只回傳純文字描述，不要 JSON。',
+              text: `請仔細辨識這張圖片中的商業文件內容（報價單/採購單/銷貨單）。
+
+要求：
+1. 公司名稱：完整正確辨識每個中文字，不要猜測或替換
+2. 產品型號：通常是英文+數字的組合（如 LRS-150-24、PCI-1245），必須精確辨識
+3. 數量和單價：分別標示清楚
+4. 文件類型：報價單/採購單/銷貨單
+
+請用以下格式輸出：
+發送方公司：XXX
+收件方公司：XXX
+文件類型：XXX
+品項：
+1. 品名：XXX，數量：XXX，單價：XXX
+2. ...
+備註：XXX`,
             },
             {
               type: 'image_url',
