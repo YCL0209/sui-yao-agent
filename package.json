@@ -11,7 +11,7 @@
     "dotenv": "^16.4.7",
     "mongodb": "^6.12.0",
     "node-telegram-bot-api": "^0.67.0",
-    "pdf-parse": "^2.4.5"
+    "pdf-parse": "^1.1.1"
   },
   "engines": {
     "node": ">=18.0.0"
