@@ -129,9 +129,10 @@ async function extractOrderFromText(text, llm) {
         content: `你是訂單解析器。從以下文字中提取訂單資訊，回傳 JSON。
 只回傳 JSON，不要其他文字。
 
-重要：我們公司是「穗鈅科技」（穗鈅/sui-yao）。
-- 如果文件上的客戶/收件方/買方是穗鈅科技，代表這是我們收到的報價單或對方給我們的單據。
-  → customerName 應填「發送方/供應商/賣方」的公司名稱（不是穗鈅科技）
+重要：我們公司是「穗鈅科技」。
+OCR 可能誤讀公司名，以下都是我們公司：穗鈅、穗鋒、穗瑤、穗堯、sui-yao、suiyao，或任何「穗X科技」的變體。
+- 如果文件上的收件方/買方是我們公司 → 這是收到的報價單
+  → customerName 應填「發送方/供應商/賣方」的公司名稱（不是我們公司）
   → type 應為 "purchase"（我們要向對方採購）
 - 如果文件是我們開給別人的 → customerName 填對方名稱，type 為 "sales" 或 "quotation"
 
