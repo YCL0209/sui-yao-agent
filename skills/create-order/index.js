@@ -212,9 +212,11 @@ function orderConfirmResponse(sess) {
   const company = sess.customer?.company ? `（${sess.customer.company}）` : '';
 
   const itemLines = sess.items.map(i => {
-    const priceStr = i.price > 0 ? ` @NT$${i.price}` : ' (價格未填)';
+    const code = i.productCode ? `[${i.productCode}] ` : '';
+    const unit = i.unit || '個';
+    const priceStr = i.price > 0 ? ` @NT$${i.price}/${unit}` : ' (價格未填)';
     const totalStr = i.price > 0 ? ` = NT$${i.quantity * i.price}` : '';
-    return `  • ${i.name} ×${i.quantity}${priceStr}${totalStr}`;
+    return `  • ${code}${i.name} ×${i.quantity}${priceStr}${totalStr}`;
   }).join('\n');
 
   const total = sess.items.reduce((s, i) => s + i.quantity * (i.price || 0), 0);
@@ -445,7 +447,7 @@ async function handleCustomerInput(chatId, sess, text) {
   return customerChoiceResponse(result.matches);
 }
 
-function handleItemsInput(chatId, sess, text) {
+async function handleItemsInput(chatId, sess, text) {
   const trimmed = text.trim();
 
   if (/^(取消|cancel)$/i.test(trimmed)) {
@@ -464,7 +466,66 @@ function handleItemsInput(chatId, sess, text) {
     };
   }
 
-  sess.items = items;
+  // RAG 產品比對
+  try {
+    const productSearch = require('../../src/product-search');
+    const enrichedItems = [];
+    const pendingItems = []; // 需要用戶選擇的品項
+
+    for (const item of items) {
+      const results = await productSearch.searchProduct(item.name);
+      const classified = productSearch.classifyResults(results);
+
+      if (classified.autoMatch.length > 0) {
+        // 高度匹配 → 自動帶入
+        const matched = classified.autoMatch[0].product;
+        enrichedItems.push({
+          name: matched.name,
+          productCode: matched.productId,
+          quantity: item.quantity,
+          price: item.price || matched.unitPrice || 0,
+          unit: matched.unit || '個',
+          _matched: true,
+          _userInput: item.name,
+        });
+        // 自動學習別名（fire-and-forget）
+        if (item.name !== matched.name) {
+          productSearch.learnAlias(matched.productId, item.name).catch(() => {});
+        }
+      } else if (classified.candidates.length > 0) {
+        // 候選 → 暫存，先用第一個候選
+        const best = classified.candidates[0].product;
+        enrichedItems.push({
+          name: best.name,
+          productCode: best.productId,
+          quantity: item.quantity,
+          price: item.price || best.unitPrice || 0,
+          unit: best.unit || '個',
+          _matched: 'candidate',
+          _userInput: item.name,
+          _score: classified.candidates[0].score,
+        });
+        pendingItems.push({ input: item.name, candidates: classified.candidates });
+      } else {
+        // 沒匹配 → 保留原始輸入
+        enrichedItems.push({
+          name: item.name,
+          productCode: null,
+          quantity: item.quantity,
+          price: item.price || 0,
+          unit: '個',
+          _matched: false,
+          _userInput: item.name,
+        });
+      }
+    }
+
+    sess.items = enrichedItems;
+  } catch (err) {
+    console.warn('[Order] RAG 比對失敗，使用原始品項:', err.message);
+    sess.items = items;
+  }
+
   sess.step = 'confirm';
   return orderConfirmResponse(sess);
 }
@@ -507,10 +568,11 @@ async function submitOrderToERP(chatId, sess) {
       customerPhone: sess.customer.phone || '',
       shippingAddress: sess.customer.address || '',
       items: sess.items.map(item => ({
-        productCode: item.name,
+        productCode: item.productCode || item.name,
         productName: item.name,
         quantity: item.quantity,
         unitPrice: item.price || 0,
+        unit: item.unit || '個',
       })),
       taxRate: 5,
       taxType: 'exclusive',

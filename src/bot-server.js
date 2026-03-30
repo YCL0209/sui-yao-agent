@@ -359,6 +359,21 @@ function startBot() {
           // result 為 null 表示 session 不處理，繼續走 LLM
         }
 
+        // ---- 同步產品關鍵詞攔截 ----
+        if (/同步產品|sync.?products?/i.test(text)) {
+          const { syncProducts } = require('../scripts/sync-products');
+          await sendReply(bot, chatId, '🔄 開始同步產品...');
+          try {
+            const stats = await syncProducts();
+            await sendReply(bot, chatId,
+              `✅ 產品同步完成\n新增: ${stats.added} | 更新: ${stats.updated} | 停用: ${stats.deactivated} | 跳過: ${stats.skipped} | 失敗: ${stats.failed}`
+            );
+          } catch (err) {
+            await sendReply(bot, chatId, `❌ 同步失敗: ${err.message}`);
+          }
+          return;
+        }
+
         // ---- 建立訂單關鍵詞直接攔截（不依賴 LLM tool calling） ----
         if (/建立訂單|建單|開單|下訂單/.test(text)) {
           const orderResult = await createOrderSkill.run(

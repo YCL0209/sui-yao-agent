@@ -120,6 +120,14 @@ const config = {
     tempDir: process.env.PDF_TEMP_DIR || '/tmp/sui-yao-pdf',
   },
 
+  // 產品 RAG 搜尋
+  product: {
+    searchTopK:          parseInt(process.env.PRODUCT_SEARCH_TOP_K)              || 3,
+    autoMatchThreshold:  parseFloat(process.env.PRODUCT_AUTO_MATCH_THRESHOLD)    || 0.85,
+    candidateThreshold:  parseFloat(process.env.PRODUCT_CANDIDATE_THRESHOLD)     || 0.65,
+    minThreshold:        parseFloat(process.env.PRODUCT_MIN_THRESHOLD)           || 0.40,
+  },
+
   // 錯誤通知
   error: {
     notifyEnabled: process.env.ERROR_NOTIFY_ENABLED !== 'false',
