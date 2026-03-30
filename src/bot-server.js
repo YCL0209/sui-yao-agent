@@ -350,6 +350,7 @@ function startBot() {
               const filePath = path.join(tmpDir, `${chatId}-${Date.now()}.pdf`);
               fs.writeFileSync(filePath, buffer);
               extractedText = await docParser.parsePDF(filePath);
+              console.log('[bot-server] PDF 提取文字:', extractedText.substring(0, 500));
               fs.unlinkSync(filePath);
             } else if (msg.photo) {
               // 圖片處理（取最大解析度）

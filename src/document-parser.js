@@ -74,7 +74,7 @@ async function parseImage(filePath) {
 
 async function extractOrderFromText(text, llm) {
   const response = await llm.chat({
-    model: config.llm.defaultModel,
+    model: config.llm.strongModel || config.llm.defaultModel,
     messages: [
       {
         role: 'system',
@@ -95,10 +95,13 @@ async function extractOrderFromText(text, llm) {
   "note": "備註" 或 null
 }
 
-品項注意事項：
-- quantity 是訂購數量（通常 1~1000），不要跟單價搞混
-- price 是每個/每條/每組的單價
-- 如果文件有「數量」和「單價」欄位，分別對應 quantity 和 price
+品項解析規則（非常重要）：
+- quantity = 訂購數量（通常是較小的整數，如 1、5、10、100）
+- price = 每單位的單價（通常是較大的數字，如 85、500、1250）
+- 如果一個品項只有一個數字，判斷它是「數量」還是「單價」：
+  - 報價單上的數字通常是單價（price），數量預設為 1
+  - 如果數字很大（>100）且沒有明確標示「數量」，很可能是單價
+- 文件常見欄位對應：「數量/QTY」→ quantity，「單價/PRICE/報價」→ price
 - 盡量提取所有品項，即使格式不標準`,
       },
       { role: 'user', content: text },
