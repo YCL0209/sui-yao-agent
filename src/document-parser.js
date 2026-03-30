@@ -152,36 +152,66 @@ async function extractOrderFromText(text, llm) {
 
   const raw = JSON.parse(jsonMatch[0]);
 
-  // 程式碼判斷哪個是我們公司，哪個是客戶
+  // 用 ERP 客戶搜尋判斷誰是客戶
   const sender = raw.sender || '';
   const receiver = raw.receiver || '';
-  const aliases = config.company.aliases;
+  const { erpFetch } = require('../lib/erp-client');
 
-  const senderIsUs = aliases.some(a => sender.includes(a));
-  const receiverIsUs = aliases.some(a => receiver.includes(a));
+  let senderMatch = null, receiverMatch = null;
 
-  let type, customerName;
-  if (receiverIsUs) {
-    // 我們是收件方（買方）→ purchase
-    type = 'purchase';
-    customerName = sender;
-  } else if (senderIsUs) {
-    // 我們是發送方（賣方）→ sales
-    type = 'sales';
-    customerName = receiver;
-  } else {
-    // 都不是我們 → 用 LLM 回傳的 documentType 猜
-    type = raw.documentType === '採購單' ? 'purchase' : raw.documentType === '銷貨單' ? 'sales' : 'quotation';
-    customerName = sender || receiver || null;
+  if (sender) {
+    try {
+      const res = await erpFetch('/api/customers');
+      if (res.success && res.data) {
+        const s = sender.toLowerCase();
+        senderMatch = res.data.find(c =>
+          c.name && (c.name.toLowerCase().includes(s) || s.includes(c.name.toLowerCase()))
+        );
+      }
+    } catch (_) {}
   }
 
-  console.log(`[document-parser] 公司判斷: sender="${sender}" receiver="${receiver}" → type=${type} customer=${customerName}`);
+  if (receiver) {
+    try {
+      const res = await erpFetch('/api/customers');
+      if (res.success && res.data) {
+        const r = receiver.toLowerCase();
+        receiverMatch = res.data.find(c =>
+          c.name && (c.name.toLowerCase().includes(r) || r.includes(c.name.toLowerCase()))
+        );
+      }
+    } catch (_) {}
+  }
+
+  let type, customerName, ambiguous = false;
+
+  if (senderMatch && !receiverMatch) {
+    // sender 是客戶 → 我們是 receiver → purchase
+    type = 'purchase';
+    customerName = senderMatch.name;
+  } else if (receiverMatch && !senderMatch) {
+    // receiver 是客戶 → 我們是 sender → sales
+    type = 'sales';
+    customerName = receiverMatch.name;
+  } else if (senderMatch && receiverMatch) {
+    // 兩個都找到 → 用文件類型判斷
+    type = raw.documentType === '採購單' ? 'purchase' : 'sales';
+    customerName = type === 'purchase' ? senderMatch.name : receiverMatch.name;
+  } else {
+    // 都找不到 → 標記 ambiguous，讓建單流程問用戶
+    type = raw.documentType === '採購單' ? 'purchase' : 'quotation';
+    customerName = null;
+    ambiguous = true;
+  }
+
+  console.log(`[document-parser] ERP 搜尋: sender="${sender}"→${senderMatch ? '✓' : '✗'} receiver="${receiver}"→${receiverMatch ? '✓' : '✗'} → type=${type} customer=${customerName}`);
 
   return {
     type,
     customerName,
     items: raw.items || [],
     note: raw.note || null,
+    _ambiguous: ambiguous ? { sender, receiver } : null,
   };
 }
 

@@ -293,7 +293,23 @@ function startBot() {
     console.log(`[bot] callback_query: ${data} (chat: ${chatId})`);
 
     try {
-      if (data.startsWith('order_')) {
+      if (data.startsWith('order_pickcustomer:')) {
+        // 用戶選擇客戶（PDF 兩個公司都搜不到時）
+        const choice = data.split(':')[1]; // 'sender' or 'receiver'
+        const sess = createOrderSkill.orderSessions.get(chatId);
+        if (sess && sess._parsedFromDoc) {
+          const parsed = sess._parsedFromDoc;
+          const amb = parsed._ambiguous;
+          parsed.customerName = choice === 'sender' ? amb.sender : amb.receiver;
+          parsed.type = choice === 'sender' ? 'purchase' : 'sales';
+          delete parsed._ambiguous;
+          createOrderSkill.orderSessions.delete(chatId);
+          const userId = `telegram:${chatId}`;
+          const llmAdapter = require('./llm-adapter');
+          const result = await createOrderSkill.startFromParsed(chatId, parsed, { userId, chatId, llm: llmAdapter });
+          if (result) await sendSkillResult(bot, chatId, result);
+        }
+      } else if (data.startsWith('order_')) {
         const result = await createOrderSkill.handleCallback(chatId, data);
         await sendSkillResult(bot, chatId, result);
         // 如果結果包含圖片，用本地檔案路徑逐一發送
@@ -381,6 +397,30 @@ function startBot() {
 
             if (!parsed || (!parsed.items?.length && !parsed.customerName)) {
               await bot.sendMessage(chatId, `無法從${sourceType}中辨識訂單資訊。\n\n提取的內容：\n${extractedText.substring(0, 500)}`);
+              return;
+            }
+
+            // 都搜不到 → 按鈕問用戶哪個是客戶
+            if (parsed._ambiguous) {
+              const { sender, receiver } = parsed._ambiguous;
+              // 暫存 parsed 到 session
+              const sess = createOrderSkill.createSession
+                ? createOrderSkill.orderSessions
+                : null;
+              if (sess) {
+                sess.set(chatId, { step: 'pick_customer', _parsedFromDoc: parsed, createdAt: Date.now() });
+              }
+              const itemsSummary = parsed.items.map(i => `  • ${i.name} ×${i.quantity} @${i.price}`).join('\n');
+              await sendReply(bot, chatId,
+                `📄 已解析 ${parsed.items.length} 個品項：\n${itemsSummary}\n\n無法自動判斷客戶，請選擇：`,
+                {
+                  inline_keyboard: [
+                    [{ text: sender, callback_data: `order_pickcustomer:sender` }],
+                    [{ text: receiver, callback_data: `order_pickcustomer:receiver` }],
+                    [{ text: '❌ 取消', callback_data: 'order_cancel' }],
+                  ],
+                }
+              );
               return;
             }
 

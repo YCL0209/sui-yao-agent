@@ -24,10 +24,9 @@ const config = {
     nodeEnv: process.env.NODE_ENV    || 'production',
   },
 
-  // 公司資訊（PDF 判斷用）
+  // 公司資訊
   company: {
-    name:    process.env.COMPANY_NAME    || '穗鈅科技股份有限公司',
-    aliases: (process.env.COMPANY_ALIASES || '穗鈅,穗鋒,禮鋼,穩鋼,穂鈅').split(',').map(s => s.trim()),
+    name: process.env.COMPANY_NAME || '穗鈅科技股份有限公司',
   },
 
   // Telegram
