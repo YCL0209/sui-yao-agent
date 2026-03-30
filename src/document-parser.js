@@ -95,7 +95,11 @@ async function extractOrderFromText(text, llm) {
   "note": "備註" 或 null
 }
 
-盡量提取所有品項，即使格式不標準。`,
+品項注意事項：
+- quantity 是訂購數量（通常 1~1000），不要跟單價搞混
+- price 是每個/每條/每組的單價
+- 如果文件有「數量」和「單價」欄位，分別對應 quantity 和 price
+- 盡量提取所有品項，即使格式不標準`,
       },
       { role: 'user', content: text },
     ],

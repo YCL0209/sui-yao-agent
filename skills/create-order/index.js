@@ -290,6 +290,53 @@ async function handleCallback(chatId, callbackData) {
     return { success: true, data: '❌ 訂單建立已取消。', summary: '訂單已取消' };
   }
 
+  // order_newcustomer — 建立新客戶
+  if (callbackData === 'order_newcustomer') {
+    const sess = getSession(chatId);
+    if (!sess || !sess._pendingCustomerName) {
+      return { success: false, data: '流程已過期，請重新開始。', summary: '流程過期' };
+    }
+    try {
+      const newCustomer = await erpFetch('/api/customers', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: sess._pendingCustomerName,
+          phone: '',
+          type: 'customer',
+          payment: { method: 'cash' },
+        }),
+      });
+      if (!newCustomer.success) {
+        return { success: false, data: `建立客戶失敗：${newCustomer.message || '未知錯誤'}`, summary: '建立失敗' };
+      }
+      sess.customer = newCustomer.data;
+      delete sess._pendingCustomerName;
+      sess.step = 'items';
+      const name = sess.customer.name;
+      console.log(`[Order] 新客戶建立: ${name} (${sess.customer.customerCode || ''})`);
+      if (sess.items && sess.items.length > 0) {
+        sess.step = 'confirm';
+        const confirmResp = orderConfirmResponse(sess);
+        return { ...confirmResp, data: `✅ 已建立客戶「${name}」\n\n${confirmResp.data}` };
+      }
+      const itemsResp = askItemsResponse();
+      return { ...itemsResp, data: `✅ 已建立客戶「${name}」\n\n${itemsResp.data}` };
+    } catch (err) {
+      console.error('[Order] 建立客戶失敗:', err);
+      return { success: false, data: `建立客戶失敗：${err.message}`, summary: '建立失敗' };
+    }
+  }
+
+  // order_retrycustomer — 重新輸入客戶
+  if (callbackData === 'order_retrycustomer') {
+    const sess = getSession(chatId);
+    if (sess) {
+      delete sess._pendingCustomerName;
+      sess.step = 'customer';
+    }
+    return { success: true, data: '請輸入客戶名稱：', summary: '重新輸入客戶' };
+  }
+
   // order_pdf:* — 建單後的 PDF 選項
   if (callbackData.startsWith('order_pdf:')) {
     const pdfType = parts[1];
@@ -423,10 +470,20 @@ async function handleCustomerInput(chatId, sess, text) {
   }
 
   if (result.matches.length === 0) {
+    sess._pendingCustomerName = trimmed;
     return {
       success: true,
-      data: `找不到客戶「${trimmed}」，請重新輸入客戶名稱，或輸入「取消」。`,
+      data: `找不到客戶「${trimmed}」`,
       summary: '找不到客戶',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: `✅ 建立「${trimmed}」`, callback_data: 'order_newcustomer' }],
+          [
+            { text: '✏️ 重新輸入', callback_data: 'order_retrycustomer' },
+            { text: '❌ 取消', callback_data: 'order_cancel' },
+          ],
+        ],
+      },
     };
   }
 
@@ -796,8 +853,25 @@ module.exports = {
     }
     if (sess.type) {
       sess.step = 'customer';
-      const notFound = parsed?.customerName ? `⚠️ ERP 找不到「${parsed.customerName}」\n` : '';
-      return { success: true, data: summary + notFound + '請輸入客戶名稱：', summary: '等待客戶' };
+      if (parsed?.customerName) {
+        // 有客戶名但 ERP 找不到 → 提供建立按鈕
+        sess._pendingCustomerName = parsed.customerName;
+        return {
+          success: true,
+          data: summary + `⚠️ ERP 找不到「${parsed.customerName}」`,
+          summary: '找不到客戶',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: `✅ 建立「${parsed.customerName}」`, callback_data: 'order_newcustomer' }],
+              [
+                { text: '✏️ 重新輸入', callback_data: 'order_retrycustomer' },
+                { text: '❌ 取消', callback_data: 'order_cancel' },
+              ],
+            ],
+          },
+        };
+      }
+      return { success: true, data: summary + '請輸入客戶名稱：', summary: '等待客戶' };
     }
     return typeSelectionResponse();
   },
