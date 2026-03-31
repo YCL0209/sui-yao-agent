@@ -628,7 +628,7 @@ async function submitOrderToERP(chatId, sess) {
       customerPhone: sess.customer.phone || '',
       shippingAddress: sess.customer.address || '',
       items: sess.items.map(item => ({
-        productCode: item.productCode || item.name,
+        productCode: item.name,
         productName: item.name,
         quantity: item.quantity,
         unitPrice: item.price || 0,
