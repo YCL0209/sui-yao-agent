@@ -86,11 +86,19 @@ async function parseOrderWithLLM(message, llm) {
 category 必須是以下之一：電子組件、機械組件、氣動組件、感測器、控制器、緊固件、線材、連接器、照明、其他
 根據品名判斷最合適的分類，無法判斷時用「其他」。
 
+品項解析規則：
+- 使用者可能用空格、逗號、換行、分號分隔多個品項
+- 常見格式：「品名 x數量@單價」「品名 ×數量 @單價」「品名 *數量 單價」
+- 多品項可能連續出現：「品名Ax1@100 品名Bx2@200」
+- 如果一段文字裡出現多個料號（英文字母+數字+符號的組合），每個料號是獨立品項
+- items 陣列必須包含所有解析出的品項，不要遺漏
+
 範例：
 - "幫王大明建一張銷售單，A4紙 100包 150元" → {"type":"sales","customerName":"王大明","items":[{"name":"A4紙","quantity":100,"price":150,"category":"其他"}],"note":null}
 - "建立訂單" → {"type":null,"customerName":null,"items":[],"note":null}
 - "採購單 大明企業 影印紙x50@120" → {"type":"purchase","customerName":"大明企業","items":[{"name":"影印紙","quantity":50,"price":120,"category":"其他"}],"note":null}
-- "出一份報價單給大明企業" → {"type":"quotation","customerName":"大明企業","items":[],"note":null}`
+- "出一份報價單給大明企業" → {"type":"quotation","customerName":"大明企業","items":[],"note":null}
+- "Cable#OAC-SUI001A x1@325 Cable#ODC-SUI001A x1@325" → {"type":null,"customerName":null,"items":[{"name":"Cable#OAC-SUI001A","quantity":1,"price":325,"category":"線材"},{"name":"Cable#ODC-SUI001A","quantity":1,"price":325,"category":"線材"}],"note":null}`
         },
         { role: 'user', content: message }
       ],
@@ -219,7 +227,13 @@ function orderConfirmResponse(sess) {
     const unit = i.unit || '個';
     const priceStr = i.price > 0 ? ` @NT$${i.price}/${unit}` : ' (價格未填)';
     const totalStr = i.price > 0 ? ` = NT$${i.quantity * i.price}` : '';
-    return `  • ${code}${i.name} ×${i.quantity}${priceStr}${totalStr}`;
+    const displayName = i.matchedName || i.originalName || i.name;
+    let line = `  • ${code}${displayName} ×${i.quantity}${priceStr}${totalStr}`;
+    // 原始輸入跟比對結果不同時顯示警告
+    if (i.matchedName && i.originalName && i.originalName !== i.matchedName) {
+      line = `  • ${i.originalName} → 比對為 ${code}${i.matchedName} ×${i.quantity}${priceStr}${totalStr}\n    ⚠️ 品名不完全一致，請確認`;
+    }
+    return line;
   }).join('\n');
 
   const total = sess.items.reduce((s, i) => s + i.quantity * (i.price || 0), 0);
@@ -540,13 +554,15 @@ async function handleItemsInput(chatId, sess, text) {
         // 高度匹配 → 自動帶入
         const matched = classified.autoMatch[0].product;
         enrichedItems.push({
-          name: matched.name,
+          name: item.name,
+          originalName: item.name,
+          matchedName: matched.name,
           productCode: matched.productId,
+          matchConfidence: classified.autoMatch[0].score,
           quantity: item.quantity,
           price: item.price || matched.unitPrice || 0,
           unit: matched.unit || '個',
           _matched: true,
-          _userInput: item.name,
         });
         // 自動學習別名（fire-and-forget）
         if (item.name !== matched.name) {
@@ -556,26 +572,29 @@ async function handleItemsInput(chatId, sess, text) {
         // 候選 → 暫存，先用第一個候選
         const best = classified.candidates[0].product;
         enrichedItems.push({
-          name: best.name,
+          name: item.name,
+          originalName: item.name,
+          matchedName: best.name,
           productCode: best.productId,
+          matchConfidence: classified.candidates[0].score,
           quantity: item.quantity,
           price: item.price || best.unitPrice || 0,
           unit: best.unit || '個',
           _matched: 'candidate',
-          _userInput: item.name,
-          _score: classified.candidates[0].score,
         });
         pendingItems.push({ input: item.name, candidates: classified.candidates });
       } else {
         // 沒匹配 → 保留原始輸入
         enrichedItems.push({
           name: item.name,
+          originalName: item.name,
+          matchedName: null,
           productCode: null,
+          matchConfidence: 0,
           quantity: item.quantity,
           price: item.price || 0,
           unit: '個',
           _matched: false,
-          _userInput: item.name,
         });
       }
     }
@@ -595,21 +614,22 @@ async function handleItemsInput(chatId, sess, text) {
  */
 function parseItems(text) {
   const items = [];
-  // 支援多種格式：A4紙x100@150, A4紙 x 100 @ 150, A4紙 100包 150元
-  const segments = text.split(/[,，\n]+/).map(s => s.trim()).filter(Boolean);
 
+  // 先用全域正則掃描所有「品名 x數量 @單價」格式的品項
+  const globalPattern = /([^\s,，;；]+?)\s*[xX×*]\s*(\d+)\s*(?:[@＠]\s*(\d+(?:\.\d+)?))?/g;
+  let gm;
+  while ((gm = globalPattern.exec(text)) !== null) {
+    items.push({ name: gm[1].trim(), quantity: parseInt(gm[2]), price: gm[3] ? parseFloat(gm[3]) : 0 });
+  }
+  if (items.length > 0) return items;
+
+  // fallback: 逗號/換行/分號切分後逐段解析
+  const segments = text.split(/[,，;；\n]+/).map(s => s.trim()).filter(Boolean);
   for (const seg of segments) {
-    // 格式1: 品名 x數量 @單價
-    let m = seg.match(/^(.+?)\s*[xX×]\s*(\d+)\s*(?:[@＠]\s*(\d+))?/);
+    // 格式: 品名 數量包/個/組 單價元
+    const m = seg.match(/^(.+?)\s+(\d+)\s*(?:包|個|組|箱|件)?\s*(\d+)?\s*(?:元)?$/);
     if (m) {
       items.push({ name: m[1].trim(), quantity: parseInt(m[2]), price: m[3] ? parseInt(m[3]) : 0 });
-      continue;
-    }
-    // 格式2: 品名 數量包/個/組 單價元
-    m = seg.match(/^(.+?)\s+(\d+)\s*(?:包|個|組|箱|件)?\s*(\d+)?\s*(?:元)?$/);
-    if (m) {
-      items.push({ name: m[1].trim(), quantity: parseInt(m[2]), price: m[3] ? parseInt(m[3]) : 0 });
-      continue;
     }
   }
   return items;
@@ -621,15 +641,17 @@ function parseItems(text) {
 
 async function submitOrderToERP(chatId, sess) {
   try {
+    // ERP 只接受 sales / purchase，報價單用 sales 建單再出報價 PDF
+    const erpOrderType = sess.type === 'quotation' ? 'sales' : sess.type;
     const orderPayload = {
-      orderType: sess.type,
+      orderType: erpOrderType,
       customerId: sess.customer._id,
       customerName: sess.customer.name,
       customerPhone: sess.customer.phone || '',
       shippingAddress: sess.customer.address || '',
       items: sess.items.map(item => ({
-        productCode: item.name,
-        productName: item.name,
+        productCode: item.productCode || item.originalName || item.name,
+        productName: item.matchedName || item.originalName || item.name,
         quantity: item.quantity,
         unitPrice: item.price || 0,
         unit: item.unit || '個',
@@ -798,8 +820,11 @@ module.exports = {
           if (classified.autoMatch.length > 0) {
             const matched = classified.autoMatch[0].product;
             enrichedItems.push({
-              name: matched.name,
+              name: item.name,
+              originalName: item.name,
+              matchedName: matched.name,
               productCode: matched.productId,
+              matchConfidence: classified.autoMatch[0].score,
               quantity: item.quantity || 1,
               price: item.price || matched.unitPrice || 0,
               unit: matched.unit || '個',
@@ -811,7 +836,10 @@ module.exports = {
           } else {
             enrichedItems.push({
               name: item.name,
+              originalName: item.name,
+              matchedName: null,
               productCode: null,
+              matchConfidence: 0,
               quantity: item.quantity || 1,
               price: item.price || 0,
               unit: '個',

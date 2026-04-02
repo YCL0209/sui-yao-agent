@@ -23,6 +23,8 @@ const dailyLog = require('./daily-log');
 const session = require('./session');
 const mongo = require('../lib/mongodb-tools');
 const createOrderSkill = require('../skills/create-order');
+const { normalizeInput } = require('./input-normalizer');
+const { classifyDocument, computeFileHash, updateDocumentStatus } = require('./document-classifier');
 
 // ============================================================
 // 啟動
@@ -350,55 +352,92 @@ function startBot() {
             await bot.sendChatAction(chatId, 'typing');
             const docParser = require('./document-parser');
             const fs = require('fs');
-            const path = require('path');
-            const tmpDir = '/tmp/sui-yao-uploads';
-            if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
-            let extractedText = '';
-            let sourceType = '';
+            // 正規化輸入
+            const input = await normalizeInput(msg, bot);
 
-            if (msg.document && msg.document.mime_type === 'application/pdf') {
-              // PDF 處理
-              sourceType = 'PDF';
-              const fileLink = await bot.getFileLink(msg.document.file_id);
-              const res = await fetch(fileLink);
-              const buffer = Buffer.from(await res.arrayBuffer());
-              const filePath = path.join(tmpDir, `${chatId}-${Date.now()}.pdf`);
-              fs.writeFileSync(filePath, buffer);
-              extractedText = await docParser.parsePDF(filePath);
-              console.log('[bot-server] PDF 提取文字:', extractedText.substring(0, 500));
-              fs.unlinkSync(filePath);
-            } else if (msg.photo) {
-              // 圖片處理（取最大解析度）
-              sourceType = '圖片';
-              const photo = msg.photo[msg.photo.length - 1];
-              const fileLink = await bot.getFileLink(photo.file_id);
-              const res = await fetch(fileLink);
-              const buffer = Buffer.from(await res.arrayBuffer());
-              const filePath = path.join(tmpDir, `${chatId}-${Date.now()}.jpg`);
-              fs.writeFileSync(filePath, buffer);
-              extractedText = await docParser.parseImage(filePath);
-              fs.unlinkSync(filePath);
+            // 分類文件
+            const classification = await classifyDocument(input);
+            console.log(`[分類結果] category=${classification.category}, docType=${classification.docType}, confidence=${classification.confidence}, reasoning=${classification.reasoning}`);
+
+            // docType 路由判斷
+            const { getDocType } = require('./doc-classification');
+            const ORDER_DOC_TYPES = new Set(['quotation', 'purchase_order']);
+
+            if (classification.docType && !ORDER_DOC_TYPES.has(classification.docType)) {
+              // 非訂單類文件 → 記錄但不解析
+              const typeDef = getDocType(classification.docType);
+              const label = typeDef ? typeDef.label : classification.docType;
+              await bot.sendMessage(chatId, `✅ 已辨識為${label}，已記錄。\n目前尚未支援自動處理此類型單據。`);
+              // 清理暫存檔
+              const att = input.attachments[0];
+              if (att) try { fs.unlinkSync(att.filePath); } catch (_) {}
+              return;
+            }
+
+            // unknown 且無商業內容 → 跳過（生活照、人物照等）
+            if (classification.category === 'unknown' && !classification.hasBusinessContent) {
+              console.log('[bot-server] 非商業內容圖片，跳過處理');
+              const att = input.attachments[0];
+              const fh = att ? computeFileHash(att.filePath) : null;
+              if (fh) updateDocumentStatus(fh, 'skipped', { reason: '非商業內容' }).catch(() => {});
+              if (att) try { fs.unlinkSync(att.filePath); } catch (_) {}
+              return;
+            }
+
+            // 回覆分類結果（quotation / purchase_order / unknown+有商業內容）
+            if (classification.category === 'unknown') {
+              await bot.sendMessage(chatId, '📄 無法辨識此文件類型，嘗試為您解析...');
+            } else if (classification.docType) {
+              const typeDef = getDocType(classification.docType);
+              const label = typeDef ? typeDef.label : classification.docType;
+              const pct = Math.round(classification.confidence * 100);
+              await bot.sendMessage(chatId, `📄 文件辨識結果\n類型：${label}\n信心度：${pct}%\n\n正在為您解析內容...`);
             } else {
+              await bot.sendMessage(chatId, `📄 文件辨識結果\n類別：${classification.category}\n\n正在為您解析內容...`);
+            }
+
+            const attachment = input.attachments[0];
+            const fileHash = attachment ? computeFileHash(attachment.filePath) : null;
+
+            if (!attachment || (attachment.type !== 'pdf' && attachment.type !== 'image')) {
               await bot.sendMessage(chatId, '目前只支援 PDF 和圖片檔案。');
               return;
             }
 
+            let extractedText = '';
+            let sourceType = '';
+
+            if (attachment.type === 'pdf') {
+              sourceType = 'PDF';
+              extractedText = await docParser.parsePDF(attachment.filePath);
+              console.log('[bot-server] PDF 提取文字:', extractedText.substring(0, 500));
+            } else {
+              sourceType = '圖片';
+              extractedText = await docParser.parseImage(attachment.filePath);
+            }
+
+            // 清理暫存檔
+            try { fs.unlinkSync(attachment.filePath); } catch (_) {}
+
             if (!extractedText || extractedText.trim().length < 10) {
+              if (fileHash) updateDocumentStatus(fileHash, 'parse_failed', { reason: '無法提取有效內容' }).catch(() => {});
               await bot.sendMessage(chatId, `無法從${sourceType}中提取有效內容。`);
               return;
             }
-
-            await bot.sendMessage(chatId, `📄 已接收${sourceType}，正在解析...`);
 
             // LLM 結構化解析
             const llmAdapter = require('./llm-adapter');
             const parsed = await docParser.extractOrderFromText(extractedText, llmAdapter);
 
             if (!parsed || (!parsed.items?.length && !parsed.customerName)) {
+              if (fileHash) updateDocumentStatus(fileHash, 'parse_failed', { reason: '無法辨識訂單資訊', extractedText: extractedText.substring(0, 500) }).catch(() => {});
               await bot.sendMessage(chatId, `無法從${sourceType}中辨識訂單資訊。\n\n提取的內容：\n${extractedText.substring(0, 500)}`);
               return;
             }
+
+            // 解析成功 → 更新 parsed_documents
+            if (fileHash) updateDocumentStatus(fileHash, 'parsed', parsed).catch(() => {});
 
             // 都搜不到 → 按鈕問用戶哪個是客戶
             if (parsed._ambiguous) {

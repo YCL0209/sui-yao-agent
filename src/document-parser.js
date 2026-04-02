@@ -62,21 +62,25 @@ async function parseImage(filePath) {
 
   console.log(`[document-parser] parseImage: ${filePath} (${(imageBuffer.length / 1024).toFixed(0)} KB, ${mimeType})`);
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.llm.openaiApiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.llm.strongModel || 'gpt-4o',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `請仔細辨識這張圖片中的商業文件內容（報價單/採購單/銷貨單）。
+  const REFUSE_KEYWORDS = ['無法識別', '無法辨識', 'I cannot', "I can't", 'sorry', 'Sorry'];
+  const MAX_ATTEMPTS = 2;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.llm.openaiApiKey}`,
+      },
+      body: JSON.stringify({
+        model: config.llm.strongModel || 'gpt-4o',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `請仔細辨識這張圖片中的商業文件內容（報價單/採購單/銷貨單）。
 
 要求：
 1. 公司名稱：完整正確辨識每個中文字，不要猜測或替換
@@ -92,25 +96,36 @@ async function parseImage(filePath) {
 1. 品名：XXX，數量：XXX，單價：XXX
 2. ...
 備註：XXX`,
-            },
-            {
-              type: 'image_url',
-              image_url: { url: `data:${mimeType};base64,${base64}` },
-            },
-          ],
-        },
-      ],
-      max_tokens: 1000,
-    }),
-  });
+              },
+              {
+                type: 'image_url',
+                image_url: { url: `data:${mimeType};base64,${base64}` },
+              },
+            ],
+          },
+        ],
+        max_tokens: 1000,
+      }),
+    });
 
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Vision API ${res.status}: ${err}`);
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Vision API ${res.status}: ${err}`);
+    }
+
+    const data = await res.json();
+    const content = data.choices[0]?.message?.content || '';
+
+    // 檢查是否為拒絕辨識的回應
+    const refused = REFUSE_KEYWORDS.some(kw => content.includes(kw));
+    if (refused && attempt < MAX_ATTEMPTS) {
+      console.log('[document-parser] vision 辨識失敗，重試中...');
+      await new Promise(r => setTimeout(r, 1000));
+      continue;
+    }
+
+    return content;
   }
-
-  const data = await res.json();
-  return data.choices[0]?.message?.content || '';
 }
 
 // ============================================================
