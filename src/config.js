@@ -89,6 +89,13 @@ const config = {
     loopTimeoutMs: parseInt(process.env.AGENT_LOOP_TIMEOUT_MS) || 30000,
   },
 
+  // 子 Agent 系統
+  subAgent: {
+    maxIterations:  parseInt(process.env.SUB_AGENT_MAX_ITERATIONS)  || 5,
+    defaultTimeout: parseInt(process.env.SUB_AGENT_DEFAULT_TIMEOUT) || 30000,
+    defaultModel:   process.env.SUB_AGENT_DEFAULT_MODEL              || process.env.DEFAULT_MODEL || 'gpt-4o-mini',
+  },
+
   // 排程
   scheduler: {
     intervalMs: parseInt(process.env.SCHEDULER_INTERVAL_MS) || 60000,
