@@ -23,8 +23,14 @@ const dailyLog = require('./daily-log');
 const session = require('./session');
 const mongo = require('../lib/mongodb-tools');
 const createOrderSkill = require('../skills/create-order');
+const ism = require('./interactive-session');
+const orderAgent = require('./agents/order-agent'); // 觸發 ISM/agentRegistry 註冊
 const { normalizeInput } = require('./input-normalizer');
 const { classifyDocument, computeFileHash, updateDocumentStatus } = require('./document-classifier');
+
+// 文件解析「客戶不明確」的暫存（key: chatId, value: { parsed, ts }）
+// _ambiguous 流程：用戶按 sender/receiver 後從這裡讀取再啟動 order session
+const _pendingDocParsed = new Map();
 
 // ============================================================
 // 啟動
@@ -291,42 +297,86 @@ function startBot() {
   bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
+    const userId = `telegram:${chatId}`;
 
     console.log(`[bot] callback_query: ${data} (chat: ${chatId})`);
 
     try {
-      if (data.startsWith('order_pickcustomer:')) {
-        // 用戶選擇客戶（PDF 兩個公司都搜不到時）
-        const choice = data.split(':')[1]; // 'sender' or 'receiver'
-        const sess = createOrderSkill.orderSessions.get(chatId);
-        if (sess && sess._parsedFromDoc) {
-          const parsed = sess._parsedFromDoc;
-          const amb = parsed._ambiguous;
-          parsed.customerName = choice === 'sender' ? amb.sender : amb.receiver;
-          parsed.type = choice === 'sender' ? 'purchase' : 'sales';
-          delete parsed._ambiguous;
-          createOrderSkill.orderSessions.delete(chatId);
-          const userId = `telegram:${chatId}`;
-          const llmAdapter = require('./llm-adapter');
-          const result = await createOrderSkill.startFromParsed(chatId, parsed, { userId, chatId, llm: llmAdapter });
-          if (result) await sendSkillResult(bot, chatId, result);
+      // ======== 主路徑：交給 ISM ========
+      const result = await ism.handleCallback(data, {
+        chatId,
+        userId,
+        messageId: query.message.message_id,
+      });
+
+      if (result) {
+        if (result.text) {
+          await sendReply(bot, chatId, result.text, result.reply_markup);
         }
-      } else if (data.startsWith('order_')) {
-        const result = await createOrderSkill.handleCallback(chatId, data);
-        await sendSkillResult(bot, chatId, result);
-        // 如果結果包含圖片，用本地檔案路徑逐一發送
-        if (result && result.images && result.images.length > 0) {
+        if (result.images && result.images.length > 0) {
           const fs = require('fs');
           for (const img of result.images) {
             try {
-              const filePath = img.localPath || img.url;
+              const filePath = img.localPath || img;
               await bot.sendPhoto(chatId, fs.createReadStream(filePath), { caption: img.caption || '' });
             } catch (imgErr) {
               console.error('[bot-server] 發送圖片失敗:', imgErr.message);
             }
           }
         }
+      } else {
+        // ======== Fallback：session 外的 callback ========
+
+        // PDF 按鈕：在 order:confirm 回傳 done:true 之後才按，session 已清除
+        if (data.startsWith('order:pdf:')) {
+          const parts = data.split(':');
+          const pdfType = parts[2];
+          const orderRef = parts.slice(3).join(':');
+          if (pdfType === 'skip') {
+            await sendReply(bot, chatId, '好的，如需要再告訴我。');
+          } else {
+            try {
+              const pdfResult = await createOrderSkill.generatePDF(orderRef, pdfType, { userId, chatId });
+              if (pdfResult && pdfResult.localPaths) {
+                await sendReply(bot, chatId, pdfResult.text);
+                const fs = require('fs');
+                for (const img of pdfResult.localPaths) {
+                  try {
+                    await bot.sendPhoto(chatId, fs.createReadStream(img.localPath || img), { caption: img.caption || '' });
+                  } catch (imgErr) {
+                    console.error('[bot-server] 發送圖片失敗:', imgErr.message);
+                  }
+                }
+              } else {
+                await sendReply(bot, chatId, pdfResult?.text || 'PDF 生成完成');
+              }
+            } catch (err) {
+              await sendReply(bot, chatId, `PDF 生成失敗：${err.message}`);
+            }
+          }
+        }
+
+        // 文件解析「客戶不明確」：sender/receiver 選擇
+        else if (data.startsWith('order:pickcustomer:')) {
+          const choice = data.split(':')[2]; // 'sender' or 'receiver'
+          const pending = _pendingDocParsed.get(chatId);
+          if (pending && pending.parsed && pending.parsed._ambiguous) {
+            const parsed = pending.parsed;
+            const amb = parsed._ambiguous;
+            parsed.customerName = choice === 'sender' ? amb.sender : amb.receiver;
+            parsed.type = choice === 'sender' ? 'purchase' : 'sales';
+            delete parsed._ambiguous;
+            _pendingDocParsed.delete(chatId);
+            const startResult = await orderAgent.startOrderSession(chatId, userId, { parsed });
+            if (startResult) {
+              await sendReply(bot, chatId, startResult.text, startResult.reply_markup);
+            }
+          } else {
+            await sendReply(bot, chatId, '建單流程已過期，請重新傳送文件。');
+          }
+        }
       }
+
       // 回應 Telegram（移除按鈕上的 loading）
       await bot.answerCallbackQuery(query.id);
     } catch (err) {
@@ -442,31 +492,26 @@ function startBot() {
             // 都搜不到 → 按鈕問用戶哪個是客戶
             if (parsed._ambiguous) {
               const { sender, receiver } = parsed._ambiguous;
-              // 暫存 parsed 到 session
-              const sess = createOrderSkill.createSession
-                ? createOrderSkill.orderSessions
-                : null;
-              if (sess) {
-                sess.set(chatId, { step: 'pick_customer', _parsedFromDoc: parsed, createdAt: Date.now() });
-              }
+              // 暫存 parsed 到 bot-server 內部 Map（解法 A）
+              _pendingDocParsed.set(chatId, { parsed, ts: Date.now() });
               const itemsSummary = parsed.items.map(i => `  • ${i.name} ×${i.quantity} @${i.price}`).join('\n');
               await sendReply(bot, chatId,
                 `📄 已解析 ${parsed.items.length} 個品項：\n${itemsSummary}\n\n無法自動判斷客戶，請選擇：`,
                 {
                   inline_keyboard: [
-                    [{ text: sender, callback_data: `order_pickcustomer:sender` }],
-                    [{ text: receiver, callback_data: `order_pickcustomer:receiver` }],
-                    [{ text: '❌ 取消', callback_data: 'order_cancel' }],
+                    [{ text: sender, callback_data: 'order:pickcustomer:sender' }],
+                    [{ text: receiver, callback_data: 'order:pickcustomer:receiver' }],
+                    [{ text: '❌ 取消', callback_data: 'order:cancel' }],
                   ],
                 }
               );
               return;
             }
 
-            // 走建單流程
-            const result = await createOrderSkill.startFromParsed(chatId, parsed, { userId, chatId, llm: llmAdapter });
+            // 走建單流程（透過 ISM）
+            const result = await orderAgent.startOrderSession(chatId, userId, { parsed });
             if (result) {
-              await sendSkillResult(bot, chatId, result);
+              await sendReply(bot, chatId, result.text, result.reply_markup);
             }
           } catch (err) {
             console.error(`[bot-server] 文件處理失敗:`, err);
@@ -482,7 +527,8 @@ function startBot() {
     // reset 指令（同時清除建單 session）
     if (text === '/reset' || text === '/new') {
       chatHistories.delete(chatId);
-      createOrderSkill.deleteSession(chatId);
+      ism.deleteSession(chatId);
+      _pendingDocParsed.delete(chatId);
       await bot.sendMessage(chatId, '🔄 對話已重置');
       return;
     }
@@ -499,15 +545,24 @@ function startBot() {
       try {
         await bot.sendChatAction(chatId, 'typing');
 
-        // ---- 建單 session 攔截：有 active session 時直接走 skill ----
-        const orderSession = createOrderSkill.getSession(chatId);
-        if (orderSession && (orderSession.step === 'customer' || orderSession.step === 'items')) {
-          const result = await createOrderSkill.handleTextInput(chatId, text);
+        // ---- ISM session 攔截：有 active session 時直接走 agent handler ----
+        if (ism.hasActiveSession(chatId)) {
+          const result = await ism.handleTextInput(chatId, text, { userId });
           if (result) {
-            await sendSkillResult(bot, chatId, result);
+            if (result.text) await sendReply(bot, chatId, result.text, result.reply_markup);
+            if (result.images && result.images.length > 0) {
+              const fs = require('fs');
+              for (const img of result.images) {
+                try {
+                  await bot.sendPhoto(chatId, fs.createReadStream(img.localPath || img), { caption: img.caption || '' });
+                } catch (imgErr) {
+                  console.error('[bot-server] 發送圖片失敗:', imgErr.message);
+                }
+              }
+            }
             return;
           }
-          // result 為 null 表示 session 不處理，繼續走 LLM
+          // result 為 null → ISM 不攔截，繼續走 LLM
         }
 
         // ---- 同步產品關鍵詞攔截 ----
@@ -525,14 +580,11 @@ function startBot() {
           return;
         }
 
-        // ---- 建立訂單關鍵詞直接攔截（不依賴 LLM tool calling） ----
+        // ---- 建立訂單關鍵詞直接攔截（透過 ISM 啟動 order session） ----
         if (/建立訂單|建單|開單|下訂單/.test(text)) {
-          const orderResult = await createOrderSkill.run(
-            { message: text },
-            { userId, chatId, llm: require('./llm-adapter') }
-          );
-          if (orderResult) {
-            await sendSkillResult(bot, chatId, orderResult);
+          const result = await orderAgent.startOrderSession(chatId, userId, {});
+          if (result) {
+            await sendReply(bot, chatId, result.text, result.reply_markup);
             return;
           }
         }
