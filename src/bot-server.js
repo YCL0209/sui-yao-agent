@@ -25,12 +25,7 @@ const mongo = require('../lib/mongodb-tools');
 const createOrderSkill = require('../skills/create-order');
 const ism = require('./interactive-session');
 const orderAgent = require('./agents/order-agent'); // 觸發 ISM/agentRegistry 註冊
-const { normalizeInput } = require('./input-normalizer');
-const { classifyDocument, computeFileHash, updateDocumentStatus } = require('./document-classifier');
-
-// 文件解析「客戶不明確」的暫存（key: chatId, value: { parsed, ts }）
-// _ambiguous 流程：用戶按 sender/receiver 後從這裡讀取再啟動 order session
-const _pendingDocParsed = new Map();
+const docAgent = require('./agents/doc-agent');     // 觸發 ISM/agentRegistry 註冊
 
 // ============================================================
 // 啟動
@@ -40,11 +35,71 @@ const _pendingDocParsed = new Map();
 const { definitions } = loadAllSkills();
 console.log(`[bot-server] 載入 ${definitions.length} 個 skill definitions`);
 
-// 對話歷史快取（per chat）
-const chatHistories = new Map();
-
 // Concurrency 控制：per-chatId Promise chain，同一用戶訊息序列化處理
 const chatLocks = new Map();
+
+// ============================================================
+// 對話歷史 — MongoDB 持久化
+// ============================================================
+
+/**
+ * 從 MongoDB 取得對話歷史
+ * @param {number|string} chatId
+ * @returns {Promise<Array>} messages 陣列
+ */
+async function getHistory(chatId) {
+  const db = await mongo.getDb();
+  const doc = await db.collection('conversations').findOne({ chatId: Number(chatId) });
+  return doc?.messages || [];
+}
+
+/**
+ * 儲存對話歷史到 MongoDB
+ * @param {number|string} chatId
+ * @param {string} userId
+ * @param {Array} messages — 完整的 messages 陣列
+ */
+async function saveHistory(chatId, userId, messages) {
+  const db = await mongo.getDb();
+  const maxMessages = config.conversation?.maxMessages || 200;
+  const trimmed = messages.length > maxMessages
+    ? messages.slice(-maxMessages)
+    : messages;
+
+  await db.collection('conversations').updateOne(
+    { chatId: Number(chatId) },
+    {
+      $set: {
+        userId,
+        messages: trimmed,
+        updatedAt: new Date(),
+      },
+      $setOnInsert: { chatId: Number(chatId) },
+    },
+    { upsert: true }
+  );
+}
+
+/**
+ * 清除對話歷史
+ * @param {number|string} chatId
+ */
+async function clearHistory(chatId) {
+  const db = await mongo.getDb();
+  await db.collection('conversations').deleteOne({ chatId: Number(chatId) });
+}
+
+/**
+ * 從 messages 陣列剝掉 ts 欄位（送 LLM 用，OpenAI 不需要 ts）
+ * @param {Array} messages
+ * @returns {Array}
+ */
+function stripTs(messages) {
+  return messages.map(m => {
+    const { ts, ...rest } = m;
+    return rest;
+  });
+}
 
 // ============================================================
 // [記憶] / [日誌] 標記解析
@@ -101,19 +156,16 @@ async function handleMessage(userId, userMessage, chatId) {
   // 1. 組裝 system prompt
   const systemPrompt = await promptLoader.loadSystemPrompt(userId, userMessage);
 
-  // 2. 取得或建立對話歷史
-  if (!chatHistories.has(chatId)) {
-    chatHistories.set(chatId, []);
-  }
-  const history = chatHistories.get(chatId);
+  // 2. 從 MongoDB 取得對話歷史
+  const history = await getHistory(chatId);
 
-  // 加入用戶訊息
-  history.push({ role: 'user', content: userMessage });
+  // 加入用戶訊息（含 ts，DB 保留；送 LLM 時會剝掉）
+  history.push({ role: 'user', content: userMessage, ts: new Date() });
 
-  // 3. 組裝 messages
+  // 3. 組裝 messages（剝掉 ts，乾淨送 LLM）
   const messages = [
     { role: 'system', content: systemPrompt },
-    ...history,
+    ...stripTs(history),
   ];
 
   // 4. 智慧截斷（帶 pre-flush）
@@ -180,14 +232,20 @@ async function handleMessage(userId, userMessage, chatId) {
 
     // 含圖片的結果直接回傳，不再經過 LLM
     if (hasImages) {
-      history.push({ role: 'assistant', content: hasImages.text });
+      history.push({ role: 'assistant', content: hasImages.text, ts: new Date() });
+      saveHistory(chatId, userId, history).catch(err =>
+        console.error('[bot-server] 對話歷史儲存失敗:', err.message)
+      );
       return { reply: hasImages.text, images: hasImages.localPaths };
     }
 
     // 含 reply_markup 的結果直接回傳，不再經過 LLM
     if (hasReplyMarkup) {
       const text = hasReplyMarkup.data || hasReplyMarkup.summary || '';
-      history.push({ role: 'assistant', content: text });
+      history.push({ role: 'assistant', content: text, ts: new Date() });
+      saveHistory(chatId, userId, history).catch(err =>
+        console.error('[bot-server] 對話歷史儲存失敗:', err.message)
+      );
       return { reply: text, reply_markup: hasReplyMarkup.reply_markup };
     }
 
@@ -220,12 +278,17 @@ async function handleMessage(userId, userMessage, chatId) {
   }
 
   // 7. 更新對話歷史
-  history.push({ role: 'assistant', content: finalReply });
+  history.push({ role: 'assistant', content: finalReply, ts: new Date() });
 
-  // 限制歷史長度
+  // 限制歷史長度（記憶體層級截斷；DB 端 saveHistory 也會用 maxMessages 截）
   while (history.length > config.session.maxRounds * 2) {
     history.shift();
   }
+
+  // 寫回 DB（fire-and-forget，不阻塞回覆）
+  saveHistory(chatId, userId, history).catch(err =>
+    console.error('[bot-server] 對話歷史儲存失敗:', err.message)
+  );
 
   // reply 為空字串但有記憶/日誌被存入時，回覆確認訊息
   if (!reply && (memories.length > 0 || logs.length > 0)) {
@@ -291,6 +354,12 @@ async function sendSkillResult(bot, chatId, result) {
 }
 
 function startBot() {
+  // 啟動時確保所有 MongoDB 索引存在（冪等）
+  const { ensureAllIndexes } = require('../scripts/ensure-indexes');
+  ensureAllIndexes().catch(err =>
+    console.error('[bot-server] ensureAllIndexes 失敗:', err.message)
+  );
+
   const bot = new TelegramBot(config.telegram.botToken, { polling: true });
 
   // ---- callback_query handler（Inline keyboard 按鈕） ----
@@ -322,6 +391,15 @@ function startBot() {
             } catch (imgErr) {
               console.error('[bot-server] 發送圖片失敗:', imgErr.message);
             }
+          }
+        }
+        // doc-agent 的 pickcustomer callback 完成後，啟動 order session
+        if (result._startOrder && result._parsed) {
+          const targetChatId = result._chatId || chatId;
+          const targetUserId = result._userId || userId;
+          const orderResult = await orderAgent.startOrderSession(targetChatId, targetUserId, { parsed: result._parsed });
+          if (orderResult && orderResult.text) {
+            await sendReply(bot, targetChatId, orderResult.text, orderResult.reply_markup);
           }
         }
       } else {
@@ -356,26 +434,19 @@ function startBot() {
           }
         }
 
-        // 文件解析「客戶不明確」：sender/receiver 選擇
-        else if (data.startsWith('order:pickcustomer:')) {
-          const choice = data.split(':')[2]; // 'sender' or 'receiver'
-          const pending = _pendingDocParsed.get(chatId);
-          if (pending && pending.parsed && pending.parsed._ambiguous) {
-            const parsed = pending.parsed;
-            const amb = parsed._ambiguous;
-            parsed.customerName = choice === 'sender' ? amb.sender : amb.receiver;
-            parsed.type = choice === 'sender' ? 'purchase' : 'sales';
-            delete parsed._ambiguous;
-            _pendingDocParsed.delete(chatId);
-            const startResult = await orderAgent.startOrderSession(chatId, userId, { parsed });
-            if (startResult) {
-              await sendReply(bot, chatId, startResult.text, startResult.reply_markup);
-            }
-          } else {
-            await sendReply(bot, chatId, '建單流程已過期，請重新傳送文件。');
-          }
+        // 殭屍按鈕兜底：session 已過期或未知 callback
+        else {
+          await sendReply(bot, chatId, '⏰ 此操作已過期，請重新開始。');
         }
       }
+
+      // 統一清除按鈕（每個 callback 按完，原訊息的按鈕都拿掉）
+      try {
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: query.message.message_id }
+        );
+      } catch (_) {}
 
       // 回應 Telegram（移除按鈕上的 loading）
       await bot.answerCallbackQuery(query.id);
@@ -393,125 +464,29 @@ function startBot() {
     const userId = `telegram:${chatId}`;
     const text = msg.text;
 
-    // ---- 非文字訊息處理（PDF / 圖片 → 自動建單） ----
+    // ---- 非文字訊息處理（PDF / 圖片 → doc-agent） ----
     if (!text) {
       if (msg.document || msg.photo) {
         const prev = chatLocks.get(chatId) || Promise.resolve();
         const current = prev.then(async () => {
           try {
             await bot.sendChatAction(chatId, 'typing');
-            const docParser = require('./document-parser');
-            const fs = require('fs');
 
-            // 正規化輸入
-            const input = await normalizeInput(msg, bot);
+            const result = await docAgent.handleDocument(msg, bot, { chatId, userId });
 
-            // 分類文件
-            const classification = await classifyDocument(input);
-            console.log(`[分類結果] category=${classification.category}, docType=${classification.docType}, confidence=${classification.confidence}, reasoning=${classification.reasoning}`);
+            if (!result) return; // null = 跳過（非商業內容）
 
-            // docType 路由判斷
-            const { getDocType } = require('./doc-classification');
-            const ORDER_DOC_TYPES = new Set(['quotation', 'purchase_order']);
-
-            if (classification.docType && !ORDER_DOC_TYPES.has(classification.docType)) {
-              // 非訂單類文件 → 記錄但不解析
-              const typeDef = getDocType(classification.docType);
-              const label = typeDef ? typeDef.label : classification.docType;
-              await bot.sendMessage(chatId, `✅ 已辨識為${label}，已記錄。\n目前尚未支援自動處理此類型單據。`);
-              // 清理暫存檔
-              const att = input.attachments[0];
-              if (att) try { fs.unlinkSync(att.filePath); } catch (_) {}
-              return;
-            }
-
-            // unknown 且無商業內容 → 跳過（生活照、人物照等）
-            if (classification.category === 'unknown' && !classification.hasBusinessContent) {
-              console.log('[bot-server] 非商業內容圖片，跳過處理');
-              const att = input.attachments[0];
-              const fh = att ? computeFileHash(att.filePath) : null;
-              if (fh) updateDocumentStatus(fh, 'skipped', { reason: '非商業內容' }).catch(() => {});
-              if (att) try { fs.unlinkSync(att.filePath); } catch (_) {}
-              return;
-            }
-
-            // 回覆分類結果（quotation / purchase_order / unknown+有商業內容）
-            if (classification.category === 'unknown') {
-              await bot.sendMessage(chatId, '📄 無法辨識此文件類型，嘗試為您解析...');
-            } else if (classification.docType) {
-              const typeDef = getDocType(classification.docType);
-              const label = typeDef ? typeDef.label : classification.docType;
-              const pct = Math.round(classification.confidence * 100);
-              await bot.sendMessage(chatId, `📄 文件辨識結果\n類型：${label}\n信心度：${pct}%\n\n正在為您解析內容...`);
-            } else {
-              await bot.sendMessage(chatId, `📄 文件辨識結果\n類別：${classification.category}\n\n正在為您解析內容...`);
-            }
-
-            const attachment = input.attachments[0];
-            const fileHash = attachment ? computeFileHash(attachment.filePath) : null;
-
-            if (!attachment || (attachment.type !== 'pdf' && attachment.type !== 'image')) {
-              await bot.sendMessage(chatId, '目前只支援 PDF 和圖片檔案。');
-              return;
-            }
-
-            let extractedText = '';
-            let sourceType = '';
-
-            if (attachment.type === 'pdf') {
-              sourceType = 'PDF';
-              extractedText = await docParser.parsePDF(attachment.filePath);
-              console.log('[bot-server] PDF 提取文字:', extractedText.substring(0, 500));
-            } else {
-              sourceType = '圖片';
-              extractedText = await docParser.parseImage(attachment.filePath);
-            }
-
-            // 清理暫存檔
-            try { fs.unlinkSync(attachment.filePath); } catch (_) {}
-
-            if (!extractedText || extractedText.trim().length < 10) {
-              if (fileHash) updateDocumentStatus(fileHash, 'parse_failed', { reason: '無法提取有效內容' }).catch(() => {});
-              await bot.sendMessage(chatId, `無法從${sourceType}中提取有效內容。`);
-              return;
-            }
-
-            // LLM 結構化解析
-            const llmAdapter = require('./llm-adapter');
-            const parsed = await docParser.extractOrderFromText(extractedText, llmAdapter);
-
-            if (!parsed || (!parsed.items?.length && !parsed.customerName)) {
-              if (fileHash) updateDocumentStatus(fileHash, 'parse_failed', { reason: '無法辨識訂單資訊', extractedText: extractedText.substring(0, 500) }).catch(() => {});
-              await bot.sendMessage(chatId, `無法從${sourceType}中辨識訂單資訊。\n\n提取的內容：\n${extractedText.substring(0, 500)}`);
-              return;
-            }
-
-            // 解析成功 → 更新 parsed_documents
-            if (fileHash) updateDocumentStatus(fileHash, 'parsed', parsed).catch(() => {});
-
-            // 都搜不到 → 按鈕問用戶哪個是客戶
-            if (parsed._ambiguous) {
-              const { sender, receiver } = parsed._ambiguous;
-              // 暫存 parsed 到 bot-server 內部 Map（解法 A）
-              _pendingDocParsed.set(chatId, { parsed, ts: Date.now() });
-              const itemsSummary = parsed.items.map(i => `  • ${i.name} ×${i.quantity} @${i.price}`).join('\n');
-              await sendReply(bot, chatId,
-                `📄 已解析 ${parsed.items.length} 個品項：\n${itemsSummary}\n\n無法自動判斷客戶，請選擇：`,
-                {
-                  inline_keyboard: [
-                    [{ text: sender, callback_data: 'order:pickcustomer:sender' }],
-                    [{ text: receiver, callback_data: 'order:pickcustomer:receiver' }],
-                    [{ text: '❌ 取消', callback_data: 'order:cancel' }],
-                  ],
-                }
-              );
-              return;
-            }
-
-            // 走建單流程（透過 ISM）
-            const result = await orderAgent.startOrderSession(chatId, userId, { parsed });
-            if (result) {
+            // 送出分類/解析結果
+            if (result.text) {
               await sendReply(bot, chatId, result.text, result.reply_markup);
+            }
+
+            // doc-agent 標記要啟動 order session
+            if (result._startOrder && result._parsed) {
+              const orderResult = await orderAgent.startOrderSession(chatId, userId, { parsed: result._parsed });
+              if (orderResult && orderResult.text) {
+                await sendReply(bot, chatId, orderResult.text, orderResult.reply_markup);
+              }
             }
           } catch (err) {
             console.error(`[bot-server] 文件處理失敗:`, err);
@@ -526,9 +501,10 @@ function startBot() {
 
     // reset 指令（同時清除建單 session）
     if (text === '/reset' || text === '/new') {
-      chatHistories.delete(chatId);
+      clearHistory(chatId).catch(err =>
+        console.error('[bot-server] 清除對話歷史失敗:', err.message)
+      );
       ism.deleteSession(chatId);
-      _pendingDocParsed.delete(chatId);
       await bot.sendMessage(chatId, '🔄 對話已重置');
       return;
     }

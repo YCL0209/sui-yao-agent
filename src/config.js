@@ -83,6 +83,12 @@ const config = {
     maxRounds:      parseInt(process.env.SESSION_MAX_ROUNDS)        || 100,
   },
 
+  // 對話歷史持久化
+  conversation: {
+    maxMessages: parseInt(process.env.CONVERSATION_MAX_MESSAGES) || 200,
+    // maxMessages 是 DB 保留上限；session.maxRounds 控制送給 LLM 的截斷
+  },
+
   // Agent 迴圈
   agent: {
     maxLoop:       parseInt(process.env.AGENT_MAX_LOOP)        || 10,

@@ -1,0 +1,119 @@
+/**
+ * 穗鈅助手 — MongoDB 索引建立腳本
+ *
+ * 確保所有 collection 的索引存在。
+ * 用法：node scripts/ensure-indexes.js
+ * 也可以在 bot-server 啟動時 require 呼叫 ensureAllIndexes()。
+ *
+ * @version 1.0.0
+ */
+
+const mongo = require('../lib/mongodb-tools');
+
+/**
+ * 安全建立索引：若已存在同 key 但不同名（IndexOptionsConflict, code 85），跳過。
+ * 其他錯誤照常拋出。
+ */
+async function safeCreateIndexes(collection, specs) {
+  for (const spec of specs) {
+    try {
+      await collection.createIndexes([spec]);
+    } catch (err) {
+      if (err.code === 85 || err.code === 86) {
+        // 85 IndexOptionsConflict / 86 IndexKeySpecsConflict
+        // 同 key 不同名（通常是 MongoDB 預設名）→ 視為已存在，跳過
+        console.log(`  ↪ ${collection.collectionName}.${spec.name}: 已存在（不同名），跳過`);
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
+async function ensureAllIndexes() {
+  const db = await mongo.getDb();
+  console.log('[ensure-indexes] 開始建立索引...');
+
+  // 記憶系統
+  await safeCreateIndexes(db.collection('memories'), [
+    { key: { userId: 1 }, name: 'idx_userId', unique: true },
+  ]);
+
+  await safeCreateIndexes(db.collection('daily_logs'), [
+    { key: { userId: 1, date: -1 }, name: 'idx_user_date' },
+  ]);
+
+  await safeCreateIndexes(db.collection('archived_daily_logs'), [
+    { key: { userId: 1, date: -1 }, name: 'idx_user_date' },
+  ]);
+
+  await safeCreateIndexes(db.collection('shared_memory'), [
+    { key: { key: 1 }, name: 'idx_key', unique: true },
+  ]);
+
+  // 對話歷史（E5 新增）
+  await safeCreateIndexes(db.collection('conversations'), [
+    { key: { chatId: 1 }, name: 'idx_chatId', unique: true },
+  ]);
+
+  // 業務資料
+  await safeCreateIndexes(db.collection('products'), [
+    { key: { productId: 1 }, name: 'idx_productId', unique: true },
+    { key: { erpId: 1 }, name: 'idx_erpId' },
+    { key: { active: 1 }, name: 'idx_active' },
+  ]);
+
+  await safeCreateIndexes(db.collection('parsed_documents'), [
+    { key: { 'source.fileHash': 1 }, name: 'idx_fileHash', unique: true },
+  ]);
+
+  // 任務與排程
+  await safeCreateIndexes(db.collection('reminders'), [
+    { key: { status: 1, remindAt: 1 }, name: 'idx_status_remindAt' },
+    { key: { userId: 1 }, name: 'idx_userId' },
+  ]);
+
+  await safeCreateIndexes(db.collection('scheduled_tasks'), [
+    { key: { status: 1 }, name: 'idx_status' },
+    { key: { taskId: 1 }, name: 'idx_taskId' },
+  ]);
+
+  await safeCreateIndexes(db.collection('task_requests'), [
+    { key: { status: 1, createdAt: 1 }, name: 'idx_status_created' },
+  ]);
+
+  await safeCreateIndexes(db.collection('task_results'), [
+    { key: { createdAt: -1 }, name: 'idx_created_desc' },
+  ]);
+
+  // 通知
+  await safeCreateIndexes(db.collection('notifications'), [
+    { key: { userId: 1, createdAt: -1 }, name: 'idx_user_created' },
+  ]);
+
+  await safeCreateIndexes(db.collection('notified_log'), [
+    { key: { email: 1, messageId: 1 }, name: 'idx_email_messageId' },
+  ]);
+
+  // 子 Agent 系統
+  await safeCreateIndexes(db.collection('sub_tasks'), [
+    { key: { parentTaskId: 1 }, name: 'idx_parent_task' },
+    { key: { assignedAgent: 1, status: 1 }, name: 'idx_agent_status' },
+    { key: { createdAt: 1 }, name: 'idx_created' },
+    { key: { 'context.userId': 1 }, name: 'idx_user' },
+  ]);
+
+  console.log('[ensure-indexes] ✅ 所有索引處理完成');
+}
+
+// CLI 模式
+if (require.main === module) {
+  ensureAllIndexes()
+    .then(() => process.exit(0))
+    .catch(err => {
+      console.error('[ensure-indexes] ❌ 失敗:', err);
+      process.exit(1);
+    });
+}
+
+module.exports = { ensureAllIndexes };
