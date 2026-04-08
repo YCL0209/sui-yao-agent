@@ -173,17 +173,33 @@ async function enforceLimit(userId) {
   const maxCount = config.memory.maxCount;
   if (doc.memories.length <= maxCount) return;
 
-  // 按建立時間排序，保留最新的 maxCount 條
-  const sorted = doc.memories
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  const kept = sorted.slice(0, maxCount);
+  // 綜合分數淘汰：importance 0.4 + recency 0.3 + access 0.3
+  const scored = doc.memories.map(m => {
+    const importance = m.importance || 0.5;
+    const daysSince = (Date.now() - new Date(m.createdAt).getTime()) / 86400000;
+    const recency = Math.exp(-daysSince / 90); // 90 天半衰期
+    const access = Math.min((m.accessCount || 0) / 10, 1);
+
+    const score = importance * 0.4 + recency * 0.3 + access * 0.3;
+    return { memory: m, score };
+  });
+
+  // 分數高的留，分數低的砍
+  scored.sort((a, b) => b.score - a.score);
+  const kept = scored.slice(0, maxCount).map(s => s.memory);
+  const dropped = scored.slice(maxCount);
 
   await db.collection('memories').updateOne(
     { userId },
     { $set: { memories: kept } }
   );
 
-  console.log(`[memory-manager] ${userId}: 淘汰 ${doc.memories.length - maxCount} 條舊記憶`);
+  // log 被淘汰的記憶（方便確認沒砍錯）
+  const droppedCount = dropped.length;
+  const droppedSamples = dropped.slice(0, 3).map(d =>
+    `${d.memory.content.substring(0, 30)}... (score: ${d.score.toFixed(3)})`
+  ).join(', ');
+  console.log(`[memory-manager] ${userId}: 淘汰 ${droppedCount} 條低分記憶 [${droppedSamples}]`);
 }
 
 // ============================================================
