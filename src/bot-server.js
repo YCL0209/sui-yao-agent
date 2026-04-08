@@ -27,6 +27,8 @@ const ism = require('./interactive-session');
 const orderAgent = require('./agents/order-agent');       // 觸發 ISM/agentRegistry 註冊
 const docAgent = require('./agents/doc-agent');           // 觸發 ISM/agentRegistry 註冊
 const reminderAgent = require('./agents/reminder-agent'); // 觸發 ISM/agentRegistry 註冊
+const adminAgent = require('./agents/admin-agent');       // 觸發 ISM/agentRegistry 註冊
+const auth = require('./auth');
 
 // ============================================================
 // 啟動
@@ -153,7 +155,7 @@ function parseMemoryTags(text) {
  * @param {string} chatId - Telegram chat ID
  * @returns {Promise<{ reply: string, reply_markup?: Object }>} 最終回覆
  */
-async function handleMessage(userId, userMessage, chatId) {
+async function handleMessage(userId, userMessage, chatId, permissions = null) {
   // 1. 組裝 system prompt
   const systemPrompt = await promptLoader.loadSystemPrompt(userId, userMessage);
 
@@ -205,7 +207,7 @@ async function handleMessage(userId, userMessage, chatId) {
       const funcName = toolCall.function?.name || 'unknown';
       console.log(`[bot-server] Agent loop ${loop + 1}: 執行 ${funcName}`);
 
-      const result = await toolExecutor.execute(toolCall, { userId, chatId });
+      const result = await toolExecutor.execute(toolCall, { userId, chatId, permissions });
 
       // 如果 tool 結果含 reply_markup（互動式按鈕），直接回傳給用戶
       if (result.data && typeof result.data === 'object' && result.data.reply_markup) {
@@ -372,6 +374,44 @@ function startBot() {
     console.log(`[bot] callback_query: ${data} (chat: ${chatId})`);
 
     try {
+      // ======== Admin 審核 callback 短路（不走 ISM）========
+      if (data.startsWith('admin:')) {
+        const adminChatId = Number(config.telegram.adminChatId);
+        if (chatId !== adminChatId) {
+          await bot.answerCallbackQuery(query.id, { text: '無權限' });
+          return;
+        }
+        const parts = data.split(':');
+        const action = parts[1];
+        const targetChatId = Number(parts[2]);
+        const role = parts[3] || 'user';
+
+        if (action === 'approve') {
+          const roleName = role === 'advanced' ? '高級用戶' : '一般用戶';
+          await auth.approveUser(targetChatId, 'approve', role, userId);
+          await sendReply(bot, chatId, `✅ 已核准 ${targetChatId} 為${roleName}`);
+          try { await bot.sendMessage(targetChatId, adminAgent.MESSAGES.welcomeAfterApproval); } catch (_) {}
+        } else if (action === 'block') {
+          await auth.approveUser(targetChatId, 'block', null, userId);
+          await sendReply(bot, chatId, `🚫 已封鎖 ${targetChatId}`);
+        } else if (action === 'setrole') {
+          const newRole = parts[3] || 'user';
+          const roleLabels = { admin: '管理員', advanced: '高級用戶', user: '一般用戶' };
+          await auth.setUserRole(targetChatId, newRole);
+          await sendReply(bot, chatId, `✅ 已將 ${targetChatId} 角色改為「${roleLabels[newRole] || newRole}」`);
+          try { await bot.sendMessage(targetChatId, `📢 您的角色已更新為「${roleLabels[newRole] || newRole}」。`); } catch (_) {}
+        }
+
+        try {
+          await bot.editMessageReplyMarkup(
+            { inline_keyboard: [] },
+            { chat_id: chatId, message_id: query.message.message_id }
+          );
+        } catch (_) {}
+        await bot.answerCallbackQuery(query.id);
+        return;
+      }
+
       // ======== 主路徑：交給 ISM ========
       const result = await ism.handleCallback(data, {
         chatId,
@@ -465,9 +505,37 @@ function startBot() {
     const userId = `telegram:${chatId}`;
     const text = msg.text;
 
+    // ======== 認證閘 ========
+    const authResult = await auth.authenticate(msg);
+
+    if (authResult.status === 'new') {
+      await bot.sendMessage(chatId, adminAgent.MESSAGES.pendingReply);
+      const notification = adminAgent.getNewUserNotification(authResult.user);
+      const adminChatId = config.telegram.adminChatId;
+      if (adminChatId) {
+        await sendReply(bot, Number(adminChatId), notification.text, notification.reply_markup);
+      }
+      return;
+    }
+    if (authResult.status === 'pending') {
+      await bot.sendMessage(chatId, adminAgent.MESSAGES.pendingReply);
+      return;
+    }
+    if (authResult.status === 'blocked') {
+      return; // 不回覆
+    }
+
+    const permissions = authResult.permissions;
+    // ========================
+
     // ---- 非文字訊息處理（PDF / 圖片 → doc-agent） ----
     if (!text) {
       if (msg.document || msg.photo) {
+        // 文件建單需要 create-order 權限
+        if (!auth.canUseSkill(permissions, 'create-order')) {
+          await bot.sendMessage(chatId, '您沒有文件建單的權限。');
+          return;
+        }
         const prev = chatLocks.get(chatId) || Promise.resolve();
         const current = prev.then(async () => {
           try {
@@ -516,6 +584,76 @@ function startBot() {
       return;
     }
 
+    // ---- Admin 用戶管理指令（只有 admin chatId 能用） ----
+    const isAdminChat = chatId === Number(config.telegram.adminChatId);
+    if (isAdminChat) {
+      // 用戶列表
+      if (/^(用戶列表|使用者列表|list ?users?)$/i.test(text)) {
+        const users = await auth.listUsers();
+        if (users.length === 0) {
+          await sendReply(bot, chatId, '目前沒有用戶。');
+          return;
+        }
+        const roleLabels = { admin: '👑管理員', advanced: '⭐高級', user: '👤一般' };
+        const statusLabels = { active: '✅', pending: '⏳', blocked: '🚫' };
+        const lines = users.map(u => {
+          const name = [u.profile?.firstName, u.profile?.lastName].filter(Boolean).join(' ') || '未知';
+          const username = u.profile?.username ? `@${u.profile.username}` : '';
+          const role = roleLabels[u.role] || u.role;
+          const status = statusLabels[u.status] || u.status;
+          return `${status} ${name} ${username}\n   角色：${role} | ID：${u.chatId}`;
+        }).join('\n\n');
+        await sendReply(bot, chatId, `📋 用戶列表（${users.length} 人）：\n\n${lines}`);
+        return;
+      }
+
+      // 升級用戶 / 封鎖用戶 / 解封用戶
+      const adminCmdMatch = text.match(/^(升級用戶|封鎖用戶|解封用戶)\s*(.+)$/);
+      if (adminCmdMatch) {
+        const cmd = adminCmdMatch[1];
+        const searchName = adminCmdMatch[2].trim();
+        const filter = cmd === '解封用戶' ? { status: 'blocked' } : {};
+        const users = await auth.listUsers(filter);
+        const matches = users.filter(u => {
+          const name = [u.profile?.firstName, u.profile?.lastName].filter(Boolean).join(' ');
+          const username = u.profile?.username || '';
+          return name.includes(searchName) || username.includes(searchName) || String(u.chatId) === searchName;
+        });
+
+        if (matches.length === 0) {
+          await sendReply(bot, chatId, `找不到用戶「${searchName}」`);
+          return;
+        }
+        if (matches.length > 1) {
+          const list = matches.map(u => `${u.profile?.firstName || ''} (${u.chatId})`).join('\n');
+          await sendReply(bot, chatId, `找到多位用戶，請用 Chat ID 指定：\n${list}`);
+          return;
+        }
+
+        const target = matches[0];
+        const targetName = [target.profile?.firstName, target.profile?.lastName].filter(Boolean).join(' ') || target.chatId;
+
+        if (cmd === '升級用戶') {
+          await sendReply(bot, chatId, `選擇「${targetName}」的新角色：`, {
+            inline_keyboard: [
+              [
+                { text: '👤 一般用戶', callback_data: `admin:setrole:${target.chatId}:user` },
+                { text: '⭐ 高級用戶', callback_data: `admin:setrole:${target.chatId}:advanced` },
+              ],
+              [{ text: '👑 管理員', callback_data: `admin:setrole:${target.chatId}:admin` }],
+            ],
+          });
+        } else if (cmd === '封鎖用戶') {
+          await auth.approveUser(target.chatId, 'block', null, userId);
+          await sendReply(bot, chatId, `🚫 已封鎖「${targetName}」`);
+        } else if (cmd === '解封用戶') {
+          await auth.approveUser(target.chatId, 'approve', target.role || 'user', userId);
+          await sendReply(bot, chatId, `✅ 已解封「${targetName}」`);
+        }
+        return;
+      }
+    }
+
     // Concurrency 控制：同一 chatId 的訊息排隊處理
     const prev = chatLocks.get(chatId) || Promise.resolve();
     const current = prev.then(async () => {
@@ -542,8 +680,12 @@ function startBot() {
           // result 為 null → ISM 不攔截，繼續走 LLM
         }
 
-        // ---- 同步產品關鍵詞攔截 ----
+        // ---- 同步產品關鍵詞攔截（需 system-router 權限）----
         if (/同步產品|sync.?products?/i.test(text)) {
+          if (!auth.canUseSkill(permissions, 'system-router')) {
+            await sendReply(bot, chatId, '您沒有此操作的權限。');
+            return;
+          }
           const { syncProducts } = require('../scripts/sync-products');
           await sendReply(bot, chatId, '🔄 開始同步產品...');
           try {
@@ -557,8 +699,12 @@ function startBot() {
           return;
         }
 
-        // ---- 建立訂單關鍵詞直接攔截（透過 ISM 啟動 order session） ----
+        // ---- 建立訂單關鍵詞直接攔截（需 create-order 權限）----
         if (/建立訂單|建單|開單|下訂單/.test(text)) {
+          if (!auth.canUseSkill(permissions, 'create-order')) {
+            await sendReply(bot, chatId, '您沒有建立訂單的權限。');
+            return;
+          }
           const result = await orderAgent.startOrderSession(chatId, userId, {});
           if (result) {
             await sendReply(bot, chatId, result.text, result.reply_markup);
@@ -575,7 +721,7 @@ function startBot() {
           }
         }
 
-        const result = await handleMessage(userId, text, chatId);
+        const result = await handleMessage(userId, text, chatId, permissions);
 
         if (result && result.reply) {
           await sendReply(bot, chatId, result.reply, result.reply_markup);

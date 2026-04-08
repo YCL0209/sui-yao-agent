@@ -94,6 +94,19 @@ async function execute(toolCall, context = {}) {
     };
   }
 
+  // 用戶權限檢查（如果 context 有帶 permissions；scheduler 等內部呼叫不帶 → 跳過）
+  if (context.permissions) {
+    const auth = require('./auth');
+    if (!auth.canUseSkill(context.permissions, funcName)) {
+      return {
+        success: false,
+        data: null,
+        summary: `您沒有使用「${funcName}」的權限。`,
+        skillName: funcName,
+      };
+    }
+  }
+
   const startMs = Date.now();
   const userId = context.userId || 'system';
 

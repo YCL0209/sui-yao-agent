@@ -24,9 +24,21 @@ const CONFIRM_REQUIRED_SKILLS = new Set([
  * @param {string} skillName — 要執行的 skill 名稱
  * @param {Object} agentDef — agent 定義（從 agent-registry 取得）
  * @param {Object} [briefing] — 子任務的 briefing（可選，用於任務範圍檢查）
+ * @param {Object} [userPermissions] — 用戶權限物件（auth.getPermissions 回傳）
  * @returns {{ action: 'allow'|'deny'|'require_confirmation', reason: string }}
  */
-function evaluate(skillName, agentDef, briefing = null) {
+function evaluate(skillName, agentDef, briefing = null, userPermissions = null) {
+  // 第零層：用戶權限（如果有傳入 userPermissions）
+  if (userPermissions) {
+    const auth = require('./auth');
+    if (!auth.canUseSkill(userPermissions, skillName)) {
+      return {
+        action: 'deny',
+        reason: `用戶角色「${userPermissions.role}」無權使用「${skillName}」`,
+      };
+    }
+  }
+
   // 第一層：角色權限
   if (!agentDef.allowedSkills.includes(skillName)) {
     return {

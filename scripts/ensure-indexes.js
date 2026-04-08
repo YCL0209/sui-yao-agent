@@ -9,6 +9,7 @@
  */
 
 const mongo = require('../lib/mongodb-tools');
+const appConfig = require('../src/config');
 
 /**
  * 安全建立索引：若已存在同 key 但不同名（IndexOptionsConflict, code 85），跳過。
@@ -109,6 +110,35 @@ async function ensureAllIndexes() {
     { key: { userId: 1, timestamp: -1 }, name: 'idx_user_timestamp' },
     { key: { skill: 1, status: 1 }, name: 'idx_skill_status' },
   ]);
+
+  // 用戶（H1 多用戶 + 權限）
+  await safeCreateIndexes(db.collection('users'), [
+    { key: { chatId: 1 }, name: 'idx_chatId', unique: true },
+    { key: { userId: 1 }, name: 'idx_userId', unique: true },
+    { key: { status: 1 }, name: 'idx_status' },
+    { key: { role: 1 }, name: 'idx_role' },
+  ]);
+
+  // 確保 admin 用戶存在
+  if (appConfig.telegram.adminChatId) {
+    await db.collection('users').updateOne(
+      { chatId: Number(appConfig.telegram.adminChatId) },
+      {
+        $setOnInsert: {
+          chatId: Number(appConfig.telegram.adminChatId),
+          userId: `telegram:${appConfig.telegram.adminChatId}`,
+          profile: { firstName: 'Admin' },
+          role: 'admin',
+          status: 'active',
+          createdAt: new Date(),
+          approvedAt: new Date(),
+          approvedBy: 'system',
+        }
+      },
+      { upsert: true }
+    );
+    console.log('[ensure-indexes] ✅ admin 用戶已確認');
+  }
 
   // 確保 db-cleanup 排程任務存在（每天跑一次自動清理過期資料）
   await db.collection('scheduled_tasks').updateOne(
