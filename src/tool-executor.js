@@ -10,6 +10,7 @@
 const config = require('./config');
 const dailyLog = require('./daily-log');
 const { loadAllSkills } = require('./skill-loader');
+const mongo = require('../lib/mongodb-tools');
 
 // 快取已載入的 skills
 let _skills = null;
@@ -20,6 +21,37 @@ function getSkills() {
     _skills = result.skills;
   }
   return _skills;
+}
+
+// ============================================================
+// 結構化 Execution Log
+// ============================================================
+
+/**
+ * 寫入結構化 execution log（fire-and-forget）
+ * @param {Object} entry
+ */
+async function writeExecutionLog(entry) {
+  const db = await mongo.getDb();
+  await db.collection('execution_logs').insertOne({
+    ...entry,
+    timestamp: new Date(),
+  });
+}
+
+/**
+ * 清理 input 中的敏感資訊（避免 log 裡出現密碼、token 等）
+ * @param {Object} args
+ * @returns {Object} 清理後的 args
+ */
+function sanitizeInput(args) {
+  if (!args || typeof args !== 'object') return args;
+  const sanitized = { ...args };
+  const sensitiveKeys = ['password', 'token', 'secret', 'apiKey', 'api_key'];
+  for (const key of sensitiveKeys) {
+    if (sanitized[key]) sanitized[key] = '***';
+  }
+  return sanitized;
 }
 
 // ============================================================
@@ -63,13 +95,13 @@ async function execute(toolCall, context = {}) {
   }
 
   const startMs = Date.now();
+  const userId = context.userId || 'system';
 
   try {
     const result = await skill.run(args, { ...context, llm: require('./llm-adapter') });
     const durationMs = Date.now() - startMs;
 
-    // 自動寫入 daily-log
-    const userId = context.userId || 'system';
+    // 自動寫入 daily-log（人類可讀摘要）
     try {
       await dailyLog.appendLog(userId, {
         type: 'task',
@@ -79,6 +111,22 @@ async function execute(toolCall, context = {}) {
     } catch (logErr) {
       console.warn('[tool-executor] daily-log 寫入失敗:', logErr.message);
     }
+
+    // 寫入 execution_logs（結構化紀錄，fire-and-forget）
+    writeExecutionLog({
+      userId,
+      chatId: context.chatId || null,
+      skill: funcName,
+      input: sanitizeInput(args),
+      output: {
+        success: result.success !== false,
+        summary: result.summary || '',
+        hasData: !!result.data,
+        hasReplyMarkup: !!result.reply_markup,
+      },
+      status: 'success',
+      durationMs,
+    }).catch(err => console.warn('[tool-executor] execution-log 寫入失敗:', err.message));
 
     return {
       success: result.success !== false,
@@ -94,7 +142,6 @@ async function execute(toolCall, context = {}) {
     const durationMs = Date.now() - startMs;
 
     // 錯誤也寫入 daily-log
-    const userId = context.userId || 'system';
     try {
       await dailyLog.appendLog(userId, {
         type: 'event',
@@ -104,6 +151,18 @@ async function execute(toolCall, context = {}) {
     } catch (_) {
       // ignore log failure
     }
+
+    // 寫入 execution_logs
+    writeExecutionLog({
+      userId,
+      chatId: context.chatId || null,
+      skill: funcName,
+      input: sanitizeInput(args),
+      output: null,
+      status: 'error',
+      error: err.message,
+      durationMs,
+    }).catch(logErr => console.warn('[tool-executor] execution-log 寫入失敗:', logErr.message));
 
     return {
       success: false,

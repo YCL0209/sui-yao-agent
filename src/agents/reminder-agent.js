@@ -29,6 +29,22 @@ const MESSAGES = {
   timeParseHint: '無法解析時間，請用以下格式：\n• 明天下午三點\n• 2026-04-15 09:00\n• 4/15 14:30',
   expired: '提醒設定已過期，請重新告訴我。',
   noTime: '（未指定時間）',
+
+  // 提醒列表 / 管理
+  noReminders: '目前沒有待執行的提醒。',
+  reminderList: (items) => {
+    if (items.length === 0) return '目前沒有待執行的提醒。';
+    const lines = items.map((r, i) => {
+      const time = r.remindAt
+        ? new Date(r.remindAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', weekday: 'short', hour: '2-digit', minute: '2-digit' })
+        : '未指定時間';
+      const repeatStr = r.repeat ? ` 🔁${r.repeat.type}` : '';
+      return `${i + 1}. 「${r.content}」\n   ⏰ ${time}${repeatStr}`;
+    }).join('\n\n');
+    return `📋 你的提醒（${items.length} 個）：\n\n${lines}`;
+  },
+  cancelledReminder: (content) => `✅ 已取消提醒：「${content}」`,
+  cancelFailed: '找不到此提醒或已取消。',
 };
 
 // ========================================
@@ -47,6 +63,17 @@ function confirmButtons() {
       ],
     ],
   };
+}
+
+function reminderListButtons(reminders) {
+  const buttons = reminders.slice(0, 5).map(r => {
+    const shortContent = r.content.length > 20 ? r.content.substring(0, 20) + '...' : r.content;
+    return [
+      { text: `❌ ${shortContent}`, callback_data: `reminder:delete:${r.id}` },
+    ];
+  });
+  buttons.push([{ text: '⬅️ 關閉', callback_data: 'reminder:close' }]);
+  return { inline_keyboard: buttons };
 }
 
 // ========================================
@@ -86,8 +113,19 @@ function formatRepeat(repeat) {
 const reminderHandler = {
   ttl: 5 * 60 * 1000, // 5 分鐘
 
-  // ---- 開始互動：顯示確認按鈕 ----
+  // ---- 開始互動：顯示確認按鈕（confirm 模式）或提醒列表（list 模式）----
   async onStart({ session }) {
+    // 查看列表模式
+    if (session.data._mode === 'list') {
+      const reminders = session.data.reminders || [];
+      session.step = 'list';
+      return {
+        text: MESSAGES.reminderList(reminders),
+        reply_markup: reminderListButtons(reminders),
+      };
+    }
+
+    // 設定確認模式
     const { content, remindAt, repeat } = session.data;
     const timeStr = formatTime(remindAt);
     const repeatStr = formatRepeat(repeat);
@@ -132,6 +170,39 @@ const reminderHandler = {
     if (action === 'edittime') {
       session.step = 'edit_time';
       return { text: MESSAGES.askNewTime };
+    }
+
+    // delete:{reminderId} — 從列表中刪除一個提醒
+    if (action === 'delete') {
+      const reminderId = payload;
+      const reminderSkill = require('../../skills/set-reminder');
+
+      // 先找到這個提醒的內容（用於回覆）
+      const beforeList = await reminderSkill.listReminders(session.userId);
+      const target = beforeList.find(r => r.id === reminderId);
+      const content = target ? target.content : '未知';
+
+      const success = await reminderSkill.cancelReminder(reminderId);
+      if (!success) {
+        return { text: MESSAGES.cancelFailed };
+      }
+
+      // 刪完後重新列出剩餘的
+      const remaining = await reminderSkill.listReminders(session.userId);
+      if (remaining.length === 0) {
+        return { text: MESSAGES.cancelledReminder(content) + '\n\n' + MESSAGES.noReminders, done: true };
+      }
+      // 更新 session 內的快取
+      session.data.reminders = remaining;
+      return {
+        text: MESSAGES.cancelledReminder(content) + '\n\n' + MESSAGES.reminderList(remaining),
+        reply_markup: reminderListButtons(remaining),
+      };
+    }
+
+    // close — 關閉列表
+    if (action === 'close') {
+      return { text: '', done: true };
     }
 
     return { text: MESSAGES.expired, done: true };
@@ -283,5 +354,21 @@ module.exports = {
   formatRepeat,
   startReminderSession: async (chatId, userId, initialData = {}) => {
     return ism.startSession('reminder', { chatId, userId, initialData });
+  },
+  // 啟動提醒列表（用於關鍵詞攔截）
+  startReminderList: async (chatId, userId) => {
+    const reminderSkill = require('../../skills/set-reminder');
+    const reminders = await reminderSkill.listReminders(userId);
+
+    if (reminders.length === 0) {
+      // 沒有提醒，不需要開 ISM session
+      return { text: MESSAGES.noReminders };
+    }
+
+    return ism.startSession('reminder', {
+      chatId,
+      userId,
+      initialData: { _mode: 'list', reminders },
+    });
   },
 };

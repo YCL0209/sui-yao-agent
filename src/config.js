@@ -89,6 +89,18 @@ const config = {
     // maxMessages 是 DB 保留上限；session.maxRounds 控制送給 LLM 的截斷
   },
 
+  // DB 定期清理（單位：天）
+  cleanup: {
+    executionLogs:   parseInt(process.env.CLEANUP_EXECUTION_LOGS_DAYS)   || 90,
+    taskResults:     parseInt(process.env.CLEANUP_TASK_RESULTS_DAYS)     || 30,
+    subTasks:        parseInt(process.env.CLEANUP_SUB_TASKS_DAYS)        || 90,
+    notifications:   parseInt(process.env.CLEANUP_NOTIFICATIONS_DAYS)    || 90,
+    reminders:       parseInt(process.env.CLEANUP_REMINDERS_DAYS)        || 30,
+    archivedLogs:    parseInt(process.env.CLEANUP_ARCHIVED_LOGS_DAYS)    || 365,
+    parsedDocuments: parseInt(process.env.CLEANUP_PARSED_DOCUMENTS_DAYS) || 180,
+    conversations:   parseInt(process.env.CLEANUP_CONVERSATIONS_DAYS)    || 90,
+  },
+
   // Agent 迴圈
   agent: {
     maxLoop:       parseInt(process.env.AGENT_MAX_LOOP)        || 10,

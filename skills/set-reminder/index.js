@@ -73,6 +73,63 @@ async function createReminder(args) {
 }
 
 // ========================================
+// 提醒查詢 / 取消 / 修改
+// ========================================
+
+/**
+ * 查詢用戶的待執行提醒
+ * @param {string} userId
+ * @returns {Promise<Array>} — 格式化的提醒列表
+ */
+async function listReminders(userId) {
+  const db = await mongo.getDb();
+  const reminders = await db.collection('reminders')
+    .find({ userId, status: 'pending' })
+    .sort({ remindAt: 1 })
+    .limit(20)
+    .toArray();
+
+  return reminders.map(r => ({
+    id: r._id.toString(),
+    content: r.content,
+    remindAt: r.remindAt,
+    repeat: r.repeat,
+    createdAt: r.createdAt,
+  }));
+}
+
+/**
+ * 取消一個提醒
+ * @param {string} reminderId — MongoDB _id
+ * @returns {Promise<boolean>} — 是否成功
+ */
+async function cancelReminder(reminderId) {
+  const { ObjectId } = require('mongodb');
+  const db = await mongo.getDb();
+  const result = await db.collection('reminders').updateOne(
+    { _id: new ObjectId(reminderId), status: 'pending' },
+    { $set: { status: 'cancelled', cancelledAt: new Date() } }
+  );
+  return result.modifiedCount > 0;
+}
+
+/**
+ * 修改提醒時間
+ * @param {string} reminderId
+ * @param {string} newRemindAt — ISO 8601
+ * @returns {Promise<boolean>}
+ */
+async function updateReminderTime(reminderId, newRemindAt) {
+  const { ObjectId } = require('mongodb');
+  const db = await mongo.getDb();
+  const result = await db.collection('reminders').updateOne(
+    { _id: new ObjectId(reminderId), status: 'pending' },
+    { $set: { remindAt: new Date(newRemindAt), updatedAt: new Date() } }
+  );
+  return result.modifiedCount > 0;
+}
+
+// ========================================
 // v3 Standard Interface
 // ========================================
 
@@ -136,6 +193,9 @@ module.exports = {
 
   // Legacy export
   createReminder,
+  listReminders,
+  cancelReminder,
+  updateReminderTime,
 };
 
 // ========================================

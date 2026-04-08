@@ -566,6 +566,15 @@ function startBot() {
           }
         }
 
+        // ---- 查看提醒關鍵詞攔截 ----
+        if (/查看提醒|我的提醒|有哪些提醒|提醒列表|list.?remind/i.test(text)) {
+          const result = await reminderAgent.startReminderList(chatId, userId);
+          if (result) {
+            await sendReply(bot, chatId, result.text, result.reply_markup);
+            return;
+          }
+        }
+
         const result = await handleMessage(userId, text, chatId);
 
         if (result && result.reply) {

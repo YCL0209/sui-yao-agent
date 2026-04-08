@@ -103,6 +103,31 @@ async function ensureAllIndexes() {
     { key: { 'context.userId': 1 }, name: 'idx_user' },
   ]);
 
+  // 可觀測性
+  await safeCreateIndexes(db.collection('execution_logs'), [
+    { key: { timestamp: -1 }, name: 'idx_timestamp_desc' },
+    { key: { userId: 1, timestamp: -1 }, name: 'idx_user_timestamp' },
+    { key: { skill: 1, status: 1 }, name: 'idx_skill_status' },
+  ]);
+
+  // 確保 db-cleanup 排程任務存在（每天跑一次自動清理過期資料）
+  await db.collection('scheduled_tasks').updateOne(
+    { taskId: 'db-cleanup' },
+    {
+      $setOnInsert: {
+        taskId: 'db-cleanup',
+        type: 'db-cleanup',
+        status: 'active',
+        interval: 86400000,  // 24 小時
+        config: {},
+        lastRunAt: new Date(0),
+        createdAt: new Date(),
+      }
+    },
+    { upsert: true }
+  );
+  console.log('[ensure-indexes] ✅ db-cleanup 排程任務已確認');
+
   console.log('[ensure-indexes] ✅ 所有索引處理完成');
 }
 

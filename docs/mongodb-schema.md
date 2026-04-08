@@ -54,7 +54,7 @@
   }
   ```
 - **索引**：`{ userId: 1, date: -1 }`
-- **保留策略**：30 天後歸檔到 archived_daily_logs
+- **保留策略**：30 天後歸檔到 archived_daily_logs（archive-logs scheduler）
 
 #### archived_daily_logs
 - **用途**：30 天以上的日誌歸檔
@@ -62,7 +62,7 @@
 - **讀取者**：極少讀取（除錯或歷史查詢用）
 - **Schema**：與 daily_logs 相同
 - **索引**：`{ userId: 1, date: -1 }`
-- **保留策略**：無限期保留（量不大）
+- **保留策略**：365 天後由 db-cleanup 自動刪除
 
 #### shared_memory
 - **用途**：跨用戶共享知識（公司規則、共用資訊）
@@ -89,7 +89,7 @@
   }
   ```
 - **索引**：`{ chatId: 1 }` (unique)
-- **保留策略**：只保留最近 maxMessages 條（由 saveHistory 控制）
+- **保留策略**：每筆訊息上限由 saveHistory 控制；整個 chat 的 updatedAt 超過 90 天由 db-cleanup 自動刪除
 
 ---
 
@@ -134,7 +134,7 @@
   }
   ```
 - **索引**：`{ 'source.fileHash': 1 }` (unique)
-- **保留策略**：無自動清理（量不大，可定期手動清）
+- **保留策略**：180 天後由 db-cleanup 自動刪除
 
 ---
 
@@ -156,7 +156,7 @@
   }
   ```
 - **索引**：`{ status: 1, remindAt: 1 }`, `{ userId: 1 }`
-- **保留策略**：triggered 的保留 30 天（歷史查詢），cancelled 可清
+- **保留策略**：done/cancelled 狀態 30 天後由 db-cleanup 自動刪除；pending 不清
 
 #### scheduled_tasks
 - **用途**：排程任務（定時查信等系統級排程）
@@ -170,13 +170,13 @@
 - **用途**：任務請求佇列
 - **來源**：OpenClaw 時期遺留，目前 system-router 還在用
 - **索引**：`{ status: 1, createdAt: 1 }`
-- **保留策略**：可考慮未來清理，目前先保留
+- **保留策略**：暫不清理（量小）
 
 #### task_results
 - **用途**：任務執行結果
 - **來源**：OpenClaw 時期遺留，system-router / scheduler 還在寫
 - **索引**：`{ createdAt: -1 }`
-- **保留策略**：同上
+- **保留策略**：30 天後由 db-cleanup 自動刪除（依 executedAt）
 
 ---
 
@@ -187,7 +187,7 @@
 - **寫入者**：mongodb-tools、system-router
 - **讀取者**：system-router（查詢通知）
 - **索引**：`{ userId: 1, createdAt: -1 }`
-- **保留策略**：定期清理 90 天前的
+- **保留策略**：delivered: true 狀態 90 天後由 db-cleanup 自動刪除
 
 #### notified_log
 - **用途**：信件去重（已通知的 email messageId）
@@ -207,7 +207,34 @@
 - **讀取者**：sub-agent-executor.js、未來的管理介面
 - **Schema**：見 stage-e1-sub-agent-infrastructure.md
 - **索引**：`{ parentTaskId: 1 }`, `{ assignedAgent: 1, status: 1 }`, `{ createdAt: 1 }`, `{ context.userId: 1 }`
-- **保留策略**：90 天後可歸檔
+- **保留策略**：completed/failed 狀態 90 天後由 db-cleanup 自動刪除（needs_review 不清）
+
+---
+
+---
+
+### 六、可觀測性
+
+#### execution_logs
+- **用途**：每次 skill 呼叫的結構化紀錄（入參、出參、耗時、成敗）
+- **寫入者**：tool-executor.js（每次 execute 自動 fire-and-forget 寫入）
+- **讀取者**：管理介面（未來）、除錯查詢
+- **Schema**：
+  ```javascript
+  {
+    userId: "telegram:8331678146",
+    chatId: 8331678146,
+    skill: "set-reminder",
+    input: { content: "開會", remindAt: "2026-04-09T16:00:00Z" },
+    output: { success: true, summary: "✅ 已設定提醒", hasData: true, hasReplyMarkup: true },
+    status: "success",       // success | error
+    error: null,             // 失敗時的錯誤訊息
+    durationMs: 234,
+    timestamp: ISODate,
+  }
+  ```
+- **索引**：`{ timestamp: -1 }`, `{ userId: 1, timestamp: -1 }`, `{ skill: 1, status: 1 }`
+- **保留策略**：90 天後由 db-cleanup 自動刪除
 
 ---
 
