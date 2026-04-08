@@ -83,12 +83,12 @@ module.exports = {
 
   definition: {
     name: 'set-reminder',
-    description: '設定提醒事項，寫入 MongoDB',
+    description: '設定提醒事項。重要約束：(1) 只有在用戶明確要求「提醒我」「幫我設提醒」「別讓我忘了」時才呼叫。用戶單純提到時間或事件（如「我明天要開會」「下週三出差」）不算要求提醒，不要呼叫。(2) 不確定用戶是否要設提醒時，先用文字問用戶，不要直接呼叫此工具。',
     parameters: {
       type: 'object',
       properties: {
         content:    { type: 'string', description: '提醒內容' },
-        remindAt:   { type: 'string', description: 'ISO 8601 日期時間' },
+        remindAt:   { type: 'string', description: 'ISO 8601 日期時間（必須根據 system prompt 中的「當前時間」來計算正確日期）' },
         repeat:     { type: 'string', enum: ['daily', 'weekly', 'monthly', 'interval'], description: '重複類型' },
         weekdays:   { type: 'string', description: '週幾（逗號分隔，0=日 1=一 ...）' },
         dayOfMonth: { type: 'number', description: '每月幾號' },
@@ -99,11 +99,39 @@ module.exports = {
   },
 
   async run(args, context) {
-    const result = await createReminder({
-      ...args,
-      userId: context?.userId || args.userId || null
-    });
-    return result;
+    // 不直接寫 DB，改為啟動 ISM session 讓用戶確認
+    // lazy require 避免循環依賴
+    const { startReminderSession } = require('../../src/agents/reminder-agent');
+
+    // 解析 repeat 結構（跟 createReminder 裡的邏輯一致）
+    let repeat = null;
+    if (args.repeat) {
+      repeat = { type: args.repeat };
+      if (args.weekdays) {
+        repeat.weekdays = typeof args.weekdays === 'string'
+          ? args.weekdays.split(',').map(Number)
+          : args.weekdays;
+      }
+      if (args.dayOfMonth) repeat.dayOfMonth = parseInt(args.dayOfMonth);
+      if (args.intervalMs) repeat.intervalMs = parseInt(args.intervalMs);
+    }
+
+    const result = await startReminderSession(
+      context.chatId,
+      context.userId,
+      {
+        content: args.content,
+        remindAt: args.remindAt || null,
+        repeat,
+      }
+    );
+
+    return {
+      success: true,
+      data: result.text || '',
+      summary: result.text || '',
+      reply_markup: result.reply_markup || null,
+    };
   },
 
   // Legacy export

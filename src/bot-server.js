@@ -24,8 +24,9 @@ const session = require('./session');
 const mongo = require('../lib/mongodb-tools');
 const createOrderSkill = require('../skills/create-order');
 const ism = require('./interactive-session');
-const orderAgent = require('./agents/order-agent'); // 觸發 ISM/agentRegistry 註冊
-const docAgent = require('./agents/doc-agent');     // 觸發 ISM/agentRegistry 註冊
+const orderAgent = require('./agents/order-agent');       // 觸發 ISM/agentRegistry 註冊
+const docAgent = require('./agents/doc-agent');           // 觸發 ISM/agentRegistry 註冊
+const reminderAgent = require('./agents/reminder-agent'); // 觸發 ISM/agentRegistry 註冊
 
 // ============================================================
 // 啟動
