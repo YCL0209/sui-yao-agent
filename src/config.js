@@ -83,10 +83,23 @@ const config = {
     maxRounds:      parseInt(process.env.SESSION_MAX_ROUNDS)        || 100,
   },
 
+  // 對話歷史持久化
+  conversation: {
+    maxMessages: parseInt(process.env.CONVERSATION_MAX_MESSAGES) || 200,
+    // maxMessages 是 DB 保留上限；session.maxRounds 控制送給 LLM 的截斷
+  },
+
   // Agent 迴圈
   agent: {
     maxLoop:       parseInt(process.env.AGENT_MAX_LOOP)        || 10,
     loopTimeoutMs: parseInt(process.env.AGENT_LOOP_TIMEOUT_MS) || 30000,
+  },
+
+  // 子 Agent 系統
+  subAgent: {
+    maxIterations:  parseInt(process.env.SUB_AGENT_MAX_ITERATIONS)  || 5,
+    defaultTimeout: parseInt(process.env.SUB_AGENT_DEFAULT_TIMEOUT) || 30000,
+    defaultModel:   process.env.SUB_AGENT_DEFAULT_MODEL              || process.env.DEFAULT_MODEL || 'gpt-4o-mini',
   },
 
   // 排程
