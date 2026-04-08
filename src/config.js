@@ -89,6 +89,14 @@ const config = {
     // maxMessages 是 DB 保留上限；session.maxRounds 控制送給 LLM 的截斷
   },
 
+  // Dashboard
+  dashboard: {
+    port:          parseInt(process.env.DASHBOARD_PORT)           || 4000,
+    host:          process.env.DASHBOARD_HOST                      || '127.0.0.1',
+    sessionSecret: process.env.DASHBOARD_SESSION_SECRET            || 'sui-yao-dashboard-' + Date.now(),
+    verifyCodeTTL: parseInt(process.env.DASHBOARD_VERIFY_CODE_TTL) || 300000,  // 5 分鐘
+  },
+
   // DB 定期清理（單位：天）
   cleanup: {
     executionLogs:   parseInt(process.env.CLEANUP_EXECUTION_LOGS_DAYS)   || 90,

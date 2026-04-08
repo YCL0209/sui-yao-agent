@@ -15,6 +15,10 @@ const mongo = require('../lib/mongodb-tools');
 // 快取已載入的 skills
 let _skills = null;
 
+// 執行後 hook（給 dashboard ws 推送用）
+let _onExecute = null;
+function setOnExecuteHook(fn) { _onExecute = fn; }
+
 function getSkills() {
   if (!_skills) {
     const result = loadAllSkills();
@@ -141,6 +145,20 @@ async function execute(toolCall, context = {}) {
       durationMs,
     }).catch(err => console.warn('[tool-executor] execution-log 寫入失敗:', err.message));
 
+    // 通知 hook（dashboard ws 推送用）
+    if (_onExecute) {
+      try {
+        _onExecute({
+          skill: funcName,
+          status: 'success',
+          summary: result.summary || '',
+          durationMs,
+          userId,
+          chatId: context.chatId || null,
+        });
+      } catch (_) {}
+    }
+
     return {
       success: result.success !== false,
       data: result.data,
@@ -177,6 +195,20 @@ async function execute(toolCall, context = {}) {
       durationMs,
     }).catch(logErr => console.warn('[tool-executor] execution-log 寫入失敗:', logErr.message));
 
+    // 通知 hook（dashboard ws 推送用）
+    if (_onExecute) {
+      try {
+        _onExecute({
+          skill: funcName,
+          status: 'error',
+          error: err.message,
+          durationMs,
+          userId,
+          chatId: context.chatId || null,
+        });
+      } catch (_) {}
+    }
+
     return {
       success: false,
       data: null,
@@ -202,4 +234,5 @@ module.exports = {
   execute,
   getSkills,
   resetCache,
+  setOnExecuteHook,
 };

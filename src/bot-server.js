@@ -29,6 +29,8 @@ const docAgent = require('./agents/doc-agent');           // 觸發 ISM/agentReg
 const reminderAgent = require('./agents/reminder-agent'); // 觸發 ISM/agentRegistry 註冊
 const adminAgent = require('./agents/admin-agent');       // 觸發 ISM/agentRegistry 註冊
 const auth = require('./auth');
+const dashboard = require('./dashboard/server');
+const wsManager = require('./dashboard/ws-manager');
 
 // ============================================================
 // 啟動
@@ -515,6 +517,8 @@ function startBot() {
       if (adminChatId) {
         await sendReply(bot, Number(adminChatId), notification.text, notification.reply_markup);
       }
+      // Dashboard 推播
+      try { wsManager.broadcast('new_user', { user: authResult.user }); } catch (_) {}
       return;
     }
     if (authResult.status === 'pending') {
@@ -756,7 +760,19 @@ function startBot() {
     console.log(`   Bot: @${me.username}`);
     console.log(`   Model: ${config.llm.defaultModel}`);
     console.log(`   Skills: ${definitions.length} 個`);
-    console.log(`   Agent 迴圈上限: ${config.agent.maxLoop} 次\n`);
+    console.log(`   Agent 迴圈上限: ${config.agent.maxLoop} 次`);
+
+    // 啟動 Dashboard server（HTTP + WebSocket）
+    dashboard.start(bot);
+
+    // 設定 tool-executor 執行 hook → 推送到 dashboard ws
+    toolExecutor.setOnExecuteHook((event) => {
+      try {
+        wsManager.broadcast('new_log', event);
+      } catch (_) {}
+    });
+
+    console.log('');
   });
 
   return bot;
