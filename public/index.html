@@ -4,23 +4,160 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>穗鈅助手 Dashboard</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      max-width: 600px;
-      margin: 80px auto;
-      padding: 0 20px;
-      color: #333;
-    }
-    h1 { color: #2c3e50; }
-    p { color: #7f8c8d; }
-    code { background: #ecf0f1; padding: 2px 6px; border-radius: 3px; }
-  </style>
+  <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <h1>🤖 穗鈅助手 Dashboard</h1>
-  <p>建構中...</p>
-  <p>API 已上線：<code>http://127.0.0.1:4000/api/status</code></p>
-  <p>WebSocket：<code>ws://127.0.0.1:4000/ws?token=xxx</code></p>
+  <!-- ============================================================
+       登入頁
+       ============================================================ -->
+  <div id="login-screen" class="login-screen">
+    <div class="login-card">
+      <h1>🤖 穗鈅助手</h1>
+      <p class="subtitle">Dashboard 管理介面</p>
+
+      <!-- 步驟 1：輸入 identifier -->
+      <div id="login-step-1">
+        <div class="login-hint">
+          💡 不知道自己的 Chat ID？<br>
+          對 bot 發送 <code>/id</code> 即可查詢
+        </div>
+        <label for="identifier">Telegram Chat ID（推薦）或 @username</label>
+        <input type="text" id="identifier" placeholder="例：8331678146 或 @yacheng" autocomplete="off">
+        <p id="login-error-1" class="error-msg"></p>
+        <button id="btn-request-code" class="btn btn-block">取得驗證碼</button>
+      </div>
+
+      <!-- 步驟 2：輸入驗證碼 -->
+      <div id="login-step-2" style="display:none;">
+        <p class="subtitle">驗證碼已發送到 <strong id="display-name"></strong> 的 Telegram</p>
+        <label for="code">6 位驗證碼</label>
+        <input type="text" id="code" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="off">
+        <p id="login-error-2" class="error-msg"></p>
+        <button id="btn-verify" class="btn btn-block">登入</button>
+        <button id="btn-back" class="btn btn-block btn-secondary" style="margin-top:8px;">重新輸入帳號</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       Dashboard 主畫面
+       ============================================================ -->
+  <div id="dashboard" class="dashboard" style="display:none;">
+    <header class="dashboard-header">
+      <h1>🤖 穗鈅助手 Dashboard</h1>
+      <div class="user-info">
+        <span id="header-user"></span>
+        <button id="btn-logout" class="btn btn-sm btn-secondary">登出</button>
+      </div>
+    </header>
+
+    <nav class="tab-bar">
+      <button class="tab-btn active" data-tab="status">系統狀態</button>
+      <button class="tab-btn" data-tab="reminders">提醒</button>
+      <button class="tab-btn" data-tab="memories">記憶</button>
+      <button class="tab-btn" data-tab="logs">Logs</button>
+      <button class="tab-btn" data-tab="conversations">對話</button>
+    </nav>
+
+    <main class="tab-content">
+
+      <!-- Tab 1：系統狀態 -->
+      <section id="tab-status" class="tab-panel active">
+        <div id="status-cards" class="stat-grid">
+          <div class="loading">載入中...</div>
+        </div>
+
+        <h2 class="section-title">系統資訊</h2>
+        <div class="card">
+          <div id="system-info" class="info-grid"></div>
+        </div>
+
+        <h2 class="section-title">最近 Skill 呼叫</h2>
+        <div id="recent-logs" class="table-wrapper">
+          <div class="loading">載入中...</div>
+        </div>
+      </section>
+
+      <!-- Tab 2：提醒 -->
+      <section id="tab-reminders" class="tab-panel">
+        <div class="filter-bar">
+          <label>狀態</label>
+          <select id="reminder-status">
+            <option value="pending">待執行</option>
+            <option value="done">已完成</option>
+            <option value="cancelled">已取消</option>
+            <option value="">全部</option>
+          </select>
+          <button id="btn-refresh-reminders" class="btn btn-sm">🔄 刷新</button>
+        </div>
+        <div id="reminders-list">
+          <div class="loading">載入中...</div>
+        </div>
+      </section>
+
+      <!-- Tab 3：記憶 -->
+      <section id="tab-memories" class="tab-panel">
+        <div class="filter-bar">
+          <span id="memory-count" style="font-weight:600; color:var(--color-primary-dark);"></span>
+          <span style="flex:1;"></span>
+          <label>用戶</label>
+          <select id="memory-user-select">
+            <option value="">自己</option>
+          </select>
+          <button id="btn-refresh-memories" class="btn btn-sm">🔄 刷新</button>
+        </div>
+        <div id="memories-list">
+          <div class="loading">載入中...</div>
+        </div>
+      </section>
+
+      <!-- Tab 4：Logs -->
+      <section id="tab-logs" class="tab-panel">
+        <div class="filter-bar">
+          <label>Skill</label>
+          <select id="log-skill">
+            <option value="">全部</option>
+            <option value="set-reminder">set-reminder</option>
+            <option value="create-order">create-order</option>
+            <option value="check-email">check-email</option>
+            <option value="generate-pdf">generate-pdf</option>
+            <option value="print-label">print-label</option>
+            <option value="system-router">system-router</option>
+          </select>
+          <label>狀態</label>
+          <select id="log-status">
+            <option value="">全部</option>
+            <option value="success">成功</option>
+            <option value="error">失敗</option>
+          </select>
+          <label>數量</label>
+          <select id="log-limit">
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+          <button id="btn-refresh-logs" class="btn btn-sm">🔄 刷新</button>
+          <span id="ws-status" style="margin-left:auto; font-size:var(--fs-small); color:var(--text-muted);"></span>
+        </div>
+        <div id="logs-list">
+          <div class="loading">載入中...</div>
+        </div>
+      </section>
+
+      <!-- Tab 5：對話 -->
+      <section id="tab-conversations" class="tab-panel">
+        <div class="filter-bar">
+          <button id="btn-refresh-conversations" class="btn btn-sm">🔄 刷新</button>
+        </div>
+        <div id="conversations-list">
+          <div class="loading">載入中...</div>
+        </div>
+        <div id="conversation-detail" style="display:none;"></div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
 </body>
 </html>

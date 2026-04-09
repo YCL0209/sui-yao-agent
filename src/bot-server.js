@@ -507,6 +507,22 @@ function startBot() {
     const userId = `telegram:${chatId}`;
     const text = msg.text;
 
+    // /id 指令：在認證閘之前處理，讓所有人（含 pending/blocked）都能查自己的 chatId
+    if (text === '/id') {
+      const from = msg.from || {};
+      const lines = [
+        `🆔 你的 Telegram 資訊`,
+        ``,
+        `Chat ID：\`${chatId}\``,
+        from.first_name ? `名稱：${[from.first_name, from.last_name].filter(Boolean).join(' ')}` : null,
+        from.username ? `Username：@${from.username}` : `Username：（未設定）`,
+      ].filter(Boolean).join('\n');
+      try { await bot.sendMessage(chatId, lines, { parse_mode: 'Markdown' }); } catch (_) {
+        await bot.sendMessage(chatId, lines);
+      }
+      return;
+    }
+
     // ======== 認證閘 ========
     const authResult = await auth.authenticate(msg);
 
