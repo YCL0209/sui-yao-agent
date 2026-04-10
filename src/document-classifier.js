@@ -11,7 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const config = require('./config');
 const mongo = require('../lib/mongodb-tools');
 const { getClassificationPrompt, createClassificationResult } = require('./doc-classification');
@@ -286,7 +286,7 @@ function pdfToFirstPageImage(pdfPath) {
   if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
   const prefix = path.join(TMP_DIR, `classify-${Date.now()}`);
-  execSync(`pdftoppm -jpeg -r 250 -l 1 "${pdfPath}" "${prefix}"`);
+  execFileSync('pdftoppm', ['-jpeg', '-r', '250', '-l', '1', pdfPath, prefix]);
 
   const files = fs.readdirSync(TMP_DIR)
     .filter(f => f.startsWith(path.basename(prefix)) && (f.endsWith('.jpg') || f.endsWith('.png')))

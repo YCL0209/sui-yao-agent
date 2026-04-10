@@ -9,7 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const config = require('../../src/config');
 const { erpFetch, ensureAuthenticated } = require('../../lib/erp-client');
 
@@ -171,10 +171,8 @@ async function generateAndSendPDF(orderId, orderNumber, type, order, context) {
     // Convert PDF to PNG
     const baseFilename = `${type}-${orderNumber}`;
     const outputPrefix = path.join(canvasDir, baseFilename);
-    const convertCmd = `pdftoppm -png -r 150 "${pdfPath}" "${outputPrefix}"`;
-
-    console.log(`[PDF] Converting PDF to images: ${convertCmd}`);
-    execSync(convertCmd);
+    console.log(`[PDF] Converting PDF to images: pdftoppm ${pdfPath}`);
+    execFileSync('pdftoppm', ['-png', '-r', '150', pdfPath, outputPrefix]);
 
     // Find generated PNG files
     const files = fs.readdirSync(canvasDir);

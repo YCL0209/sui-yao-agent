@@ -28,6 +28,43 @@ const orderAgent = require('./agents/order-agent');       // 觸發 ISM/agentReg
 const docAgent = require('./agents/doc-agent');           // 觸發 ISM/agentRegistry 註冊
 const reminderAgent = require('./agents/reminder-agent'); // 觸發 ISM/agentRegistry 註冊
 const adminAgent = require('./agents/admin-agent');       // 觸發 ISM/agentRegistry 註冊
+
+// 高風險操作確認 ISM handler
+ism.registerHandler('danger-confirm', {
+  ttl: 2 * 60 * 1000, // 2 分鐘
+
+  async onStart({ session }) {
+    return { text: '' }; // 已經在 agent loop 回覆了
+  },
+
+  async onCallback(session, action) {
+    if (action === 'cancel') {
+      return { text: '❌ 已取消操作。', done: true };
+    }
+
+    if (action === 'execute') {
+      const { skill, args } = session.data;
+      try {
+        const result = await toolExecutor.execute(
+          { function: { name: skill, arguments: JSON.stringify(args) } },
+          { userId: session.userId, chatId: session.chatId, _skipHighRisk: true }
+        );
+        return {
+          text: result.summary || '✅ 操作已執行。',
+          done: true,
+        };
+      } catch (err) {
+        return { text: `執行失敗：${err.message}`, done: true };
+      }
+    }
+
+    return { text: '', done: true };
+  },
+
+  async onTimeout(session) {
+    console.log(`[danger-confirm] 確認超時: chat=${session.chatId}`);
+  },
+});
 const auth = require('./auth');
 const dashboard = require('./dashboard/server');
 const wsManager = require('./dashboard/ws-manager');
@@ -225,6 +262,31 @@ async function handleMessage(userId, userMessage, chatId, permissions = null) {
       console.log(`[bot-server] Agent loop ${loop + 1}: 執行 ${funcName}`);
 
       const result = await toolExecutor.execute(toolCall, { userId, chatId, permissions });
+
+      // 高風險操作需要確認 → 啟動 ISM session，直接回傳按鈕
+      if (result._requireConfirmation) {
+        const confirmData = result._confirmData;
+        const confirmResult = await ism.startSession('danger-confirm', {
+          chatId,
+          userId,
+          initialData: {
+            skill: confirmData.skill,
+            args: confirmData.args,
+            description: confirmData.description,
+          },
+        });
+        return {
+          reply: `⚠️ 高風險操作確認\n\n操作：${confirmData.description}\n\n確定要執行嗎？`,
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ 確定執行', callback_data: 'danger-confirm:execute' },
+                { text: '❌ 取消', callback_data: 'danger-confirm:cancel' },
+              ],
+            ],
+          },
+        };
+      }
 
       // 如果 tool 結果含 reply_markup（互動式按鈕），直接回傳給用戶
       if (result.data && typeof result.data === 'object' && result.data.reply_markup) {

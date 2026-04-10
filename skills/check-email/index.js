@@ -7,7 +7,7 @@
  * @version 1.0.0
  */
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
@@ -101,12 +101,12 @@ function saveState(state) {
 
 function fetchUnreadEmails() {
   try {
-    const cmd = `${config.email.gogBinPath} gmail search "is:unread" --max ${MAX_RESULTS} --json --account ${config.email.gogAccount}`;
-    const output = execSync(cmd, {
-      encoding: 'utf8',
-      timeout: 30000,
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
+    const output = execFileSync(config.email.gogBinPath, [
+      'gmail', 'search', 'is:unread',
+      '--max', String(MAX_RESULTS),
+      '--json',
+      '--account', config.email.gogAccount,
+    ], { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] });
 
     const data = JSON.parse(output);
     if (!data.threads || !Array.isArray(data.threads)) {

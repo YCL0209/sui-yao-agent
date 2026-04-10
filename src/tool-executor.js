@@ -111,6 +111,26 @@ async function execute(toolCall, context = {}) {
     }
   }
 
+  // 高風險操作檢查（程式碼層強制，不靠 prompt；確認後重新執行時跳過）
+  if (context.permissions && !context._skipHighRisk) {
+    const policyEngine = require('./policy-engine');
+    const riskCheck = policyEngine.checkHighRisk(funcName, args);
+    if (riskCheck.isHighRisk) {
+      return {
+        success: false,
+        data: null,
+        summary: `⚠️ 此操作為「${riskCheck.description}」，需要確認後才能執行。`,
+        skillName: funcName,
+        _requireConfirmation: true,
+        _confirmData: {
+          skill: funcName,
+          args,
+          description: riskCheck.description,
+        },
+      };
+    }
+  }
+
   const startMs = Date.now();
   const userId = context.userId || 'system';
 

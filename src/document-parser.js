@@ -16,14 +16,14 @@ const config = require('./config');
 // ============================================================
 
 async function parsePDF(filePath) {
-  const { execSync } = require('child_process');
+  const { execFileSync } = require('child_process');
   const tmpDir = '/tmp/sui-yao-pdf-img';
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
   // 一律轉圖片 → vision 辨識（表格欄位分得更清楚）
   console.log('[document-parser] PDF → 圖片 → vision 辨識...');
   const prefix = path.join(tmpDir, `pdf-${Date.now()}`);
-  execSync(`pdftoppm -jpeg -r 250 -l 3 "${filePath}" "${prefix}"`);
+  execFileSync('pdftoppm', ['-jpeg', '-r', '250', '-l', '3', filePath, prefix]);
 
   const files = fs.readdirSync(tmpDir)
     .filter(f => f.startsWith(path.basename(prefix)) && (f.endsWith('.jpg') || f.endsWith('.png')))

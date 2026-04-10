@@ -22,6 +22,23 @@ const _pendingCodes = new Map();
 // 暫存 session token：{ token: { chatId, userId, role, expiresAt } }
 const _sessions = new Map();
 
+// Rate limit：每個 identifier 每分鐘最多 3 次
+const _rateLimits = new Map();
+const RATE_LIMIT_WINDOW = 60000;
+const RATE_LIMIT_MAX = 3;
+
+function checkRateLimit(identifier) {
+  const now = Date.now();
+  const key = String(identifier).toLowerCase();
+  const record = _rateLimits.get(key);
+  if (!record || now - record.start > RATE_LIMIT_WINDOW) {
+    _rateLimits.set(key, { start: now, count: 1 });
+    return true;
+  }
+  record.count++;
+  return record.count <= RATE_LIMIT_MAX;
+}
+
 const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 小時
 const MAX_ATTEMPTS = 5;
 
@@ -31,6 +48,10 @@ const MAX_ATTEMPTS = 5;
  * @returns {Promise<{ success, chatId, displayName, error? }>}
  */
 async function requestVerifyCode(identifier) {
+  if (!checkRateLimit(identifier)) {
+    return { success: false, error: '請求過於頻繁，請稍後再試' };
+  }
+
   const users = await auth.listUsers();
   const target = String(identifier).toLowerCase().replace('@', '');
   const user = users.find(u => {
@@ -145,6 +166,9 @@ function cleanup() {
   }
   for (const [token, session] of _sessions) {
     if (now > session.expiresAt) _sessions.delete(token);
+  }
+  for (const [key, record] of _rateLimits) {
+    if (now - record.start > RATE_LIMIT_WINDOW) _rateLimits.delete(key);
   }
 }
 

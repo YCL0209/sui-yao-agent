@@ -100,4 +100,33 @@ function getRiskLevel(skillName) {
   return 'safe';
 }
 
-module.exports = { evaluate, addDangerousSkill, addConfirmRequiredSkill, getRiskLevel };
+// 高風險操作模式：根據 skill + 參數判斷
+const HIGH_RISK_PATTERNS = [
+  {
+    skill: 'system-router',
+    paramCheck: (args) => {
+      const source = args.params?.source;
+      if (source === 'cancel_reminder') return true;
+      if (source === 'delete_task') return true;
+      return false;
+    },
+    description: '刪除操作',
+  },
+];
+
+/**
+ * 檢查操作是否為高風險（根據 skill + 參數）
+ * @param {string} skillName
+ * @param {Object} args — skill 的參數
+ * @returns {{ isHighRisk: boolean, description?: string }}
+ */
+function checkHighRisk(skillName, args) {
+  for (const pattern of HIGH_RISK_PATTERNS) {
+    if (pattern.skill === skillName && pattern.paramCheck(args)) {
+      return { isHighRisk: true, description: pattern.description };
+    }
+  }
+  return { isHighRisk: false };
+}
+
+module.exports = { evaluate, addDangerousSkill, addConfirmRequiredSkill, getRiskLevel, checkHighRisk };
