@@ -116,17 +116,32 @@ function stripTs(messages) {
  * @param {string} text - LLM 回覆文字
  * @returns {{ reply: string, memories: string[], logs: string[] }}
  */
+/**
+ * 解析回覆中的 [記憶] 和 [日誌] 標記
+ * 支援 [記憶:高] [記憶] [記憶:低] 三級重要性
+ *
+ * @param {string} text - LLM 回覆文字
+ * @returns {{ reply: string, memories: Array<{content, importance}>, logs: string[] }}
+ */
 function parseMemoryTags(text) {
   if (!text) return { reply: '', memories: [], logs: [] };
 
   const memories = [];
   const logs = [];
 
-  // 只匹配行首的標記（^ + m flag）
-  const memoryMatches = text.match(/^\[記憶\]\s+(.+)$/gm) || [];
+  // 匹配 [記憶]、[記憶:高]、[記憶:低]
+  const memoryMatches = text.match(/^\[記憶(?::([高低]))?\]\s+(.+)$/gm) || [];
   for (const m of memoryMatches) {
-    const content = m.replace(/^\[記憶\]\s+/, '').trim();
-    if (content) memories.push(content);
+    const parsed = m.match(/^\[記憶(?::([高低]))?\]\s+(.+)$/);
+    if (parsed) {
+      const level = parsed[1]; // '高' | '低' | undefined
+      const content = parsed[2].trim();
+      let importance;
+      if (level === '高') importance = 0.9;
+      else if (level === '低') importance = 0.3;
+      else importance = 0.6; // 沒標等級，預設 0.6
+      if (content) memories.push({ content, importance });
+    }
   }
 
   const logMatches = text.match(/^\[日誌\]\s+(.+)$/gm) || [];
@@ -135,9 +150,9 @@ function parseMemoryTags(text) {
     if (content) logs.push(content);
   }
 
-  // 只移除行首的標記行，句中出現的保留原文
+  // 移除行首的標記行（包含新格式）
   const reply = text
-    .replace(/^\[記憶\]\s+.+$/gm, '')
+    .replace(/^\[記憶(?::(?:高|低))?\]\s+.+$/gm, '')
     .replace(/^\[日誌\]\s+.+$/gm, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -272,7 +287,7 @@ async function handleMessage(userId, userMessage, chatId, permissions = null) {
   if (memories.length > 0 || logs.length > 0) {
     Promise.all([
       ...memories.map(mem =>
-        memoryManager.saveMemory(userId, mem, 'LLM 回覆')
+        memoryManager.saveMemory(userId, mem.content, 'LLM 回覆', { importance: mem.importance })
           .catch(err => console.error('[bot-server] 記憶存入失敗:', err.message))
       ),
       ...logs.map(log =>
