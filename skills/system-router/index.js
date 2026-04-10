@@ -77,16 +77,27 @@ async function handleQuery(params, userId) {
   }
 
   if (source === 'create_task') {
+    const taskType = params.taskType || params.type;
+    const taskId = `${taskType}:${userId}`;
+
+    // 若已存在，改為恢復啟用
+    const existing = await db.collection('scheduled_tasks').findOne({ taskId });
+    if (existing) {
+      await db.collection('scheduled_tasks').updateOne(
+        { taskId },
+        { $set: { status: 'active', updatedAt: new Date() } }
+      );
+      return { ok: true, action: 'query', data: { taskId, message: '定時任務已重新啟用' } };
+    }
+
     const doc = {
-      taskId: `${params.taskType}-user-${userId}`,
+      taskId,
       userId,
-      taskType: params.taskType,
+      type: taskType,
       status: 'active',
       interval: parseInt(params.interval),
       config: params.config || {},
-      activeHours: params.activeHours || { start: "09:00", end: "21:00" },
-      timezone: params.timezone || "Asia/Taipei",
-      lastRunAt: null,
+      lastRunAt: new Date(0),
       lastResult: null,
       createdAt: new Date()
     };

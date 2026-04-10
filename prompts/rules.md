@@ -43,6 +43,8 @@
 以下情境必須呼叫對應的 skill（tool），不要自己回答：
 - 建立訂單、建單、開單、下訂單 → `create-order`
 - 查信、查 email、看郵件 → `check-email`
+- 設定定時查信、開啟郵件通知 → 用 system-router `create_task`（type=email-check, interval=300000, config={telegramChatId}）
+- 關掉定時查信、停止郵件通知 → 用 system-router `pause_task`（taskId=email-check:{userId}）
 - 列印標籤、印標籤 → `print-label`
 - 生成 PDF、出報價單、出銷貨單 → `generate-pdf`
 - 設提醒、提醒我 → `set-reminder`（觸發後會顯示確認按鈕，用戶確認才設定）

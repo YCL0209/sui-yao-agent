@@ -140,23 +140,43 @@ async function ensureAllIndexes() {
     console.log('[ensure-indexes] ✅ admin 用戶已確認');
   }
 
-  // 確保 db-cleanup 排程任務存在（每天跑一次自動清理過期資料）
-  await db.collection('scheduled_tasks').updateOne(
-    { taskId: 'db-cleanup' },
+  // 確保系統排程任務存在（部署時自動建好）
+  const systemTasks = [
     {
-      $setOnInsert: {
-        taskId: 'db-cleanup',
-        type: 'db-cleanup',
-        status: 'active',
-        interval: 86400000,  // 24 小時
-        config: {},
-        lastRunAt: new Date(0),
-        createdAt: new Date(),
-      }
+      taskId: 'reminder',
+      type: 'reminder',
+      interval: 60000,       // 每分鐘掃到期提醒
     },
-    { upsert: true }
-  );
-  console.log('[ensure-indexes] ✅ db-cleanup 排程任務已確認');
+    {
+      taskId: 'archive-logs',
+      type: 'archive-logs',
+      interval: 86400000,    // 24 小時歸檔舊日誌
+    },
+    {
+      taskId: 'db-cleanup',
+      type: 'db-cleanup',
+      interval: 86400000,    // 24 小時清理過期資料
+    },
+  ];
+
+  for (const t of systemTasks) {
+    await db.collection('scheduled_tasks').updateOne(
+      { taskId: t.taskId },
+      {
+        $setOnInsert: {
+          taskId: t.taskId,
+          type: t.type,
+          status: 'active',
+          interval: t.interval,
+          config: {},
+          lastRunAt: new Date(0),
+          createdAt: new Date(),
+        }
+      },
+      { upsert: true }
+    );
+  }
+  console.log('[ensure-indexes] ✅ 系統排程任務已確認 (reminder, archive-logs, db-cleanup)');
 
   console.log('[ensure-indexes] ✅ 所有索引處理完成');
 }
