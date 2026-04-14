@@ -198,6 +198,60 @@ function parseMemoryTags(text) {
 }
 
 // ============================================================
+// Tool Call 容錯：本地模型可能把 tool call 混進文字內容
+// ============================================================
+
+/**
+ * 嘗試從 LLM 的文字回覆中解析出 tool call
+ * 某些本地模型（如 qwen2.5:7b）偶爾會把 tool call JSON 寫在 content 裡
+ * 而不是走正式的 tool_calls 欄位
+ *
+ * @param {string} content - LLM 回覆的文字內容
+ * @returns {Object|null} 標準化的 toolCall 物件，或 null
+ */
+function tryRescueToolCall(content) {
+  if (!content) return null;
+
+  try {
+    // 模式 1：文字中包含 {"name": "xxx", "arguments": {...}}
+    const jsonMatch = content.match(/\{\s*"name"\s*:\s*"([\w-]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}/);
+    if (jsonMatch) {
+      const name = jsonMatch[1];
+      const args = jsonMatch[2];
+      const knownSkills = ['set-reminder', 'create-order', 'check-email', 'generate-pdf', 'print-label', 'system-router'];
+      if (knownSkills.includes(name)) {
+        JSON.parse(args); // 驗證 JSON 合法
+        return {
+          id: `rescued_${Date.now()}`,
+          type: 'function',
+          function: { name, arguments: args },
+        };
+      }
+    }
+
+    // 模式 2：被 <tool_call> 或 </tool_call> 標籤包裹
+    const tagMatch = content.match(/"name"\s*:\s*"([\w-]+)"[\s\S]*?"arguments"\s*:\s*(\{[^}]*\})/);
+    if (tagMatch) {
+      const name = tagMatch[1];
+      const args = tagMatch[2];
+      const knownSkills = ['set-reminder', 'create-order', 'check-email', 'generate-pdf', 'print-label', 'system-router'];
+      if (knownSkills.includes(name)) {
+        JSON.parse(args);
+        return {
+          id: `rescued_${Date.now()}`,
+          type: 'function',
+          function: { name, arguments: args },
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[bot-server] tryRescueToolCall 解析失敗:', err.message);
+  }
+
+  return null;
+}
+
+// ============================================================
 // Agent 迴圈
 // ============================================================
 
@@ -240,10 +294,16 @@ async function handleMessage(userId, userMessage, chatId, permissions = null) {
       tools: definitions.length > 0 ? definitions : undefined,
     });
 
-    // 一般回覆（無 tool_call）→ 結束迴圈
+    // 一般回覆（無 tool_call）→ 嘗試從文字內容中救回 tool call
     if (!response.tool_calls || response.tool_calls.length === 0) {
-      finalReply = response.content || '';
-      break;
+      const rescued = tryRescueToolCall(response.content);
+      if (rescued) {
+        console.log(`[bot-server] 從文字內容中救回 tool_call: ${rescued.function.name}`);
+        response.tool_calls = [rescued];
+      } else {
+        finalReply = response.content || '';
+        break;
+      }
     }
 
     // 有 tool_call → 執行
