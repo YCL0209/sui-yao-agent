@@ -289,7 +289,6 @@ async function handleMessage(userId, userMessage, chatId, permissions = null) {
 
   for (let loop = 0; loop < maxLoop; loop++) {
     const response = await llm.chat({
-      model: config.llm.defaultModel,
       messages: currentMessages,
       tools: definitions.length > 0 ? definitions : undefined,
     });
@@ -395,7 +394,6 @@ async function handleMessage(userId, userMessage, chatId, permissions = null) {
     if (loop === maxLoop - 1) {
       console.warn(`[bot-server] Agent 迴圈達到上限 (${maxLoop})，強制結束`);
       const finalResponse = await llm.chat({
-        model: config.llm.defaultModel,
         messages: currentMessages,
       });
       finalReply = finalResponse.content || '（處理完成，但無法生成回覆）';
@@ -813,6 +811,7 @@ function startBot() {
 
     // Concurrency 控制：同一 chatId 的訊息排隊處理
     const prev = chatLocks.get(chatId) || Promise.resolve();
+    let processingMsg = null;
     const current = prev.then(async () => {
       try {
         await bot.sendChatAction(chatId, 'typing');
@@ -878,25 +877,72 @@ function startBot() {
           }
         }
 
+        // 本地模型先發「處理中」提示
+        const isLocalModel = config.llm.chatProvider === 'ollama';
+        if (isLocalModel) {
+          processingMsg = await bot.sendMessage(chatId, '⏳ 處理中...');
+        }
+
         const result = await handleMessage(userId, text, chatId, permissions);
 
-        if (result && result.reply) {
-          await sendReply(bot, chatId, result.reply, result.reply_markup);
-        }
-        // Agent loop 回傳的圖片
-        if (result && result.images && result.images.length > 0) {
-          const fs = require('fs');
-          for (const img of result.images) {
-            try {
-              await bot.sendPhoto(chatId, fs.createReadStream(img.localPath), { caption: img.caption || '' });
-            } catch (imgErr) {
-              console.error('[bot-server] 發送圖片失敗:', imgErr.message);
+        if (processingMsg) {
+          // 本地模型：替換「處理中」為正式回覆
+          try {
+            if (result && result.reply) {
+              await bot.editMessageText(result.reply, {
+                chat_id: chatId,
+                message_id: processingMsg.message_id,
+                parse_mode: 'Markdown',
+                reply_markup: result.reply_markup || undefined,
+              });
+            }
+          } catch (editErr) {
+            // editMessageText 失敗（文字相同、Markdown 格式錯誤等）→ fallback 發新訊息
+            if (result && result.reply) {
+              await sendReply(bot, chatId, result.reply, result.reply_markup);
+            }
+          }
+          // 圖片另外發
+          if (result && result.images && result.images.length > 0) {
+            const fs = require('fs');
+            for (const img of result.images) {
+              try {
+                await bot.sendPhoto(chatId, fs.createReadStream(img.localPath), { caption: img.caption || '' });
+              } catch (imgErr) {
+                console.error('[bot-server] 發送圖片失敗:', imgErr.message);
+              }
+            }
+          }
+        } else {
+          // OpenAI：維持現有邏輯
+          if (result && result.reply) {
+            await sendReply(bot, chatId, result.reply, result.reply_markup);
+          }
+          if (result && result.images && result.images.length > 0) {
+            const fs = require('fs');
+            for (const img of result.images) {
+              try {
+                await bot.sendPhoto(chatId, fs.createReadStream(img.localPath), { caption: img.caption || '' });
+              } catch (imgErr) {
+                console.error('[bot-server] 發送圖片失敗:', imgErr.message);
+              }
             }
           }
         }
       } catch (err) {
         console.error(`[bot-server] 處理訊息失敗 (chat: ${chatId}):`, err);
-        await bot.sendMessage(chatId, '抱歉，處理時發生錯誤，請稍後再試。');
+        if (processingMsg) {
+          try {
+            await bot.editMessageText('抱歉，處理時發生錯誤，請稍後再試。', {
+              chat_id: chatId,
+              message_id: processingMsg.message_id,
+            });
+          } catch (_) {
+            await bot.sendMessage(chatId, '抱歉，處理時發生錯誤，請稍後再試。');
+          }
+        } else {
+          await bot.sendMessage(chatId, '抱歉，處理時發生錯誤，請稍後再試。');
+        }
         await notifyError(bot, err, `Chat: ${chatId}\nMessage: ${text}`);
       }
     });
@@ -911,7 +957,7 @@ function startBot() {
   bot.getMe().then(me => {
     console.log(`\n🤖 穗鈅助手已啟動`);
     console.log(`   Bot: @${me.username}`);
-    console.log(`   Model: ${config.llm.defaultModel}`);
+    console.log(`   Model: ${config.llm.chatProvider === 'ollama' ? config.ollama.chatModel : config.llm.defaultModel} (${config.llm.chatProvider})`);
     console.log(`   Skills: ${definitions.length} 個`);
     console.log(`   Agent 迴圈上限: ${config.agent.maxLoop} 次`);
 

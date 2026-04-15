@@ -43,21 +43,24 @@ const config = {
 
   // LLM — 雲端
   llm: {
-    openaiApiKey: process.env.OPENAI_API_KEY,
-    defaultModel: process.env.DEFAULT_MODEL || 'gpt-4o-mini',
-    strongModel:  process.env.STRONG_MODEL  || 'gpt-4o',
+    openaiApiKey:  process.env.OPENAI_API_KEY,
+    defaultModel:  process.env.DEFAULT_MODEL || 'gpt-4o-mini',
+    strongModel:   process.env.STRONG_MODEL  || 'gpt-4o',
+    chatProvider:  process.env.CHAT_PROVIDER  || 'openai',   // 'openai' | 'ollama'
+    embedProvider: process.env.EMBED_PROVIDER || 'openai',   // 'openai' | 'ollama'
   },
 
   // LLM — 本地
   ollama: {
-    baseUrl:        process.env.OLLAMA_BASE_URL   || 'http://127.0.0.1:11434',
+    baseUrl:        process.env.OLLAMA_BASE_URL    || 'http://127.0.0.1:11434/v1',
+    chatModel:      process.env.OLLAMA_CHAT_MODEL  || 'qwen2.5:7b',
     model:          process.env.OLLAMA_MODEL       || 'llama3.1:8b',
     schedulerModel: process.env.SCHEDULER_MODEL    || 'ollama/llama3.1:8b',
   },
 
   // Embedding
   embedding: {
-    provider:    process.env.EMBEDDING_PROVIDER      || 'openai',
+    provider:    process.env.EMBED_PROVIDER          || process.env.EMBEDDING_PROVIDER || 'openai',
     model:       process.env.EMBEDDING_MODEL         || 'text-embedding-3-small',
     ollamaModel: process.env.OLLAMA_EMBEDDING_MODEL  || 'nomic-embed-text',
   },
@@ -231,7 +234,7 @@ config.isStrongModel = function(model) {
  */
 config.getBaseURL = function(model) {
   if (config.isOllamaModel(model)) {
-    return `${config.ollama.baseUrl}/v1`;
+    return config.ollama.baseUrl; // 已含 /v1
   }
   return 'https://api.openai.com/v1';
 };
@@ -245,10 +248,11 @@ config.printSummary = function() {
   console.log(`   環境：${config.app.nodeEnv}`);
   console.log(`   Telegram：${mask(config.telegram.botToken)}`);
   console.log(`   OpenAI：${mask(config.llm.openaiApiKey)}`);
+  console.log(`   Chat Provider：${config.llm.chatProvider}`);
   console.log(`   預設模型：${config.llm.defaultModel}`);
-  console.log(`   Ollama：${config.ollama.baseUrl} (${config.ollama.model})`);
+  console.log(`   Ollama：${config.ollama.baseUrl} (chat: ${config.ollama.chatModel})`);
   console.log(`   MongoDB：${config.mongo.uri}/${config.mongo.dbName}`);
-  console.log(`   Embedding：${config.embedding.provider} (${config.embedding.model})`);
+  console.log(`   Embed Provider：${config.llm.embedProvider} (${config.embedding.model})`);
   console.log(`   記憶上限：${config.memory.maxCount} 條`);
   console.log(`   日誌保留：${config.memory.dailyLogRetentionDays} 天`);
   console.log(`   Agent 迴圈上限：${config.agent.maxLoop} 次\n`);

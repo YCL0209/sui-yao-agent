@@ -83,6 +83,28 @@ async function loadRecentLogs(userId) {
   }).join('\n\n');
 }
 
+/**
+ * 只載入今天的日誌（Ollama 精簡版用）
+ * @param {string} userId
+ * @returns {string} 格式化的日誌文字
+ */
+async function loadTodayLogs(userId) {
+  const db = await mongo.getDb();
+  const today = new Date().toISOString().split('T')[0];
+
+  const log = await db.collection('daily_logs')
+    .findOne({ userId, date: today });
+
+  if (!log || !log.entries?.length) return '（今天尚無活動記錄）';
+
+  const items = log.entries.map(e => {
+    const time = e.time ? new Date(e.time).toTimeString().slice(0, 5) : '??:??';
+    return `- [${time}] ${e.content}`;
+  }).join('\n');
+
+  return items;
+}
+
 // ============================================================
 // 連線管理（方便測試）
 // ============================================================
@@ -127,6 +149,7 @@ Object.defineProperty(module.exports, 'db', {
 module.exports = {
   appendLog,
   loadRecentLogs,
+  loadTodayLogs,
   connect,
   close,
 };

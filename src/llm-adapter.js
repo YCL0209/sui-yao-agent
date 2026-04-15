@@ -80,10 +80,10 @@ async function openaiChat({ model, messages, tools, temperature }) {
 // ============================================================
 
 async function ollamaChat({ model, messages, tools, temperature }) {
-  const ollamaModel = ollamaModelName(model);
-  const baseUrl = config.ollama.baseUrl;
+  const ollamaModel = model ? ollamaModelName(model) : config.ollama.chatModel;
+  const baseUrl = config.ollama.baseUrl; // 已含 /v1
 
-  // 嘗試用 OpenAI 相容介面（Ollama /v1/chat/completions）
+  // OpenAI 相容介面
   const body = {
     model: ollamaModel,
     messages,
@@ -96,9 +96,15 @@ async function ollamaChat({ model, messages, tools, temperature }) {
     body.tools = tools;
   }
 
-  const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+  console.log('[ollama] request model:', body.model, 'tools count:', body.tools?.length || 0);
+  console.log('[ollama] request body tail:', JSON.stringify(body).slice(-500));
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ollama',  // Ollama 不需要真 key，但 header 要有
+    },
     body: JSON.stringify(body),
   });
 
@@ -110,6 +116,7 @@ async function ollamaChat({ model, messages, tools, temperature }) {
   const data = await res.json();
   const choice = data.choices[0];
   const msg = choice.message;
+  console.log('[ollama] response finish_reason:', choice.finish_reason, 'has_tool_calls:', !!msg.tool_calls, 'content_preview:', (msg.content || '').substring(0, 200));
 
   // 如果有 tools 但 Ollama 沒回 tool_calls，嘗試字串解析降級
   if (tools && tools.length > 0 && !msg.tool_calls && msg.content) {
@@ -219,32 +226,62 @@ function tryParseJson(str) {
 // ============================================================
 
 /**
+ * 判斷錯誤是否可以 fallback（連線失敗、5xx、rate limit）
+ */
+function isFallbackableError(err) {
+  const msg = err.message || '';
+  if (msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT')) return true;
+  if (/\b5\d{2}\b/.test(msg)) return true;  // 5xx
+  if (msg.includes('rate_limit') || msg.includes('429')) return true;
+  return false;
+}
+
+/**
  * 統一 Chat Completion 呼叫
  *
+ * 根據 CHAT_PROVIDER 決定主要 provider，失敗時自動 fallback。
+ * 若 model 明確指定 ollama/ 前綴，強制走 Ollama。
+ *
  * @param {Object} options
- * @param {string} [options.model] - 模型名稱（預設 config.llm.defaultModel）
+ * @param {string} [options.model] - 模型名稱（預設依 provider 決定）
  * @param {Array} options.messages - OpenAI 格式 messages
  * @param {Array} [options.tools] - function calling tools 定義
  * @param {number} [options.temperature] - 溫度（預設 0.7）
  * @returns {Promise<{ content, tool_calls, role, usage, finish_reason }>}
  */
 async function chat(options) {
-  const model = options.model || config.llm.defaultModel;
+  const explicitModel = options.model;
 
-  if (isOllama(model)) {
-    return ollamaChat({ ...options, model });
+  // 明確指定 ollama/ 前綴 → 強制走 Ollama，不 fallback
+  if (explicitModel && isOllama(explicitModel)) {
+    return ollamaChat({ ...options, model: explicitModel });
   }
 
-  // TODO: Ollama 降級 — 目前 8B 模型太小，帶 tools + 長 prompt 會卡住
-  // 升級硬體或換更大的本地模型後再啟用
-  // try {
-  //   return await openaiChat({ ...options, model });
-  // } catch (err) {
-  //   const fallbackModel = `ollama/${config.ollama.model}`;
-  //   console.warn(`[llm-adapter] OpenAI 呼叫失敗 (${err.message})，降級到 ${fallbackModel}`);
-  //   return ollamaChat({ ...options, model: fallbackModel });
-  // }
-  return openaiChat({ ...options, model });
+  const provider = config.llm.chatProvider;
+
+  // 根據 provider 決定模型名稱
+  const model = provider === 'ollama'
+    ? config.ollama.chatModel                          // qwen2.5:7b
+    : (explicitModel || config.llm.defaultModel);      // gpt-4o-mini
+
+  const primary = provider === 'ollama' ? ollamaChat : openaiChat;
+  const fallback = provider === 'ollama' ? openaiChat : ollamaChat;
+  const primaryLabel = provider === 'ollama' ? 'Ollama' : 'OpenAI';
+  const fallbackLabel = provider === 'ollama' ? 'OpenAI' : 'Ollama';
+
+  try {
+    return await primary({ ...options, model });
+  } catch (err) {
+    if (isFallbackableError(err)) {
+      // fallback 用對方的預設模型
+      const fallbackModel = provider === 'ollama'
+        ? config.llm.defaultModel
+        : config.ollama.chatModel;
+      console.warn(`[llm-adapter] ${primaryLabel} 呼叫失敗 (${err.message})，fallback 到 ${fallbackLabel} (${fallbackModel})`);
+      return fallback({ ...options, model: fallbackModel });
+    }
+    throw err; // 非 fallback 類錯誤（如 400 參數錯誤），直接拋出
+  }
 }
 
 // ============================================================
@@ -260,7 +297,7 @@ async function chat(options) {
  * @returns {Promise<number[]>} - embedding 向量
  */
 async function getEmbedding(text, options = {}) {
-  const provider = options.provider || config.embedding.provider;
+  const provider = options.provider || config.llm.embedProvider;
 
   if (provider === 'ollama') {
     return ollamaEmbedding(text);
@@ -292,7 +329,9 @@ async function openaiEmbedding(text) {
 }
 
 async function ollamaEmbedding(text) {
-  const res = await fetch(`${config.ollama.baseUrl}/api/embeddings`, {
+  // baseUrl 已含 /v1，embedding 要用原生 API（去掉 /v1）
+  const ollamaBase = config.ollama.baseUrl.replace(/\/v1\/?$/, '');
+  const res = await fetch(`${ollamaBase}/api/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
