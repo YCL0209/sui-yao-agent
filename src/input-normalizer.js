@@ -1,10 +1,12 @@
 /**
- * 穗鈅助手 — 輸入正規化
+ * 穗鈅助手 — 輸入正規化（Phase I1：多平台）
  *
- * 把 Telegram 訊息物件轉成統一輸入結構，
- * 讓下游模組不需要直接處理 Telegram API 格式。
+ * 把各平台的 raw 訊息物件轉成 adapter-interface 的 raw 形式：
+ *   { chatId, userId, profile, textContent, attachments, messageId, replyToId?, timestamp }
  *
- * @version 1.0.0
+ * Adapter 的 handleIncoming(raw) 會把這個 raw 加上 platform 等欄位變成 normalizedMsg。
+ *
+ * @version 2.0.0
  */
 
 const fs = require('fs');
@@ -22,56 +24,38 @@ function getAttachmentType(mimeType) {
   return 'other';
 }
 
+function mimeExtension(mime) {
+  const map = {
+    'application/pdf': '.pdf',
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+  };
+  return map[mime] || '';
+}
+
+function ensureTmpDir() {
+  if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+}
+
 // ============================================================
-// normalizeInput
+// Telegram
 // ============================================================
 
 /**
- * 把 Telegram 訊息物件正規化為統一輸入結構。
- * 呼叫時需傳入 bot 實例（用於取得檔案連結並下載）。
- *
  * @param {Object} msg - Telegram message 物件
- * @param {Object} bot - TelegramBot 實例
- * @returns {Promise<NormalizedInput>}
- *
- * @typedef {Object} NormalizedInput
- * @property {'telegram'} source
- * @property {string|null} textContent
- * @property {Array<Attachment>} attachments
- * @property {InputMetadata} metadata
- *
- * @typedef {Object} Attachment
- * @property {'pdf'|'image'|'other'} type
- * @property {string} filePath
- * @property {string} originalName
- * @property {number} fileSize
- * @property {string} mimeType
- *
- * @typedef {Object} InputMetadata
- * @property {string} senderId
- * @property {string} senderName
- * @property {string} chatId
- * @property {number} messageId
- * @property {Date} timestamp
+ * @param {Object} bot - TelegramBot 實例（getFileLink 用）
+ * @returns {Promise<Object>} adapter raw 形式
  */
-async function normalizeInput(msg, bot) {
-  if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+async function normalizeTelegramInput(msg, bot) {
+  ensureTmpDir();
 
   const chatId = String(msg.chat.id);
   const from = msg.from || {};
-
-  const metadata = {
-    senderId: String(from.id || chatId),
-    senderName: [from.first_name, from.last_name].filter(Boolean).join(' ') || '',
-    chatId,
-    messageId: msg.message_id,
-    timestamp: new Date((msg.date || Math.floor(Date.now() / 1000)) * 1000),
-  };
-
-  const textContent = msg.text || msg.caption || null;
+  const textContent = msg.text || msg.caption || '';
   const attachments = [];
 
-  // PDF 或其他文件
+  // PDF / document
   if (msg.document) {
     const doc = msg.document;
     const mimeType = doc.mime_type || 'application/octet-stream';
@@ -113,25 +97,90 @@ async function normalizeInput(msg, bot) {
     });
   }
 
-  return { source: 'telegram', textContent, attachments, metadata };
+  return {
+    chatId,
+    userId: String(from.id || msg.chat.id),
+    profile: {
+      firstName:    from.first_name    || '',
+      lastName:     from.last_name     || '',
+      username:     from.username      || '',
+      languageCode: from.language_code || '',
+    },
+    textContent,
+    attachments,
+    messageId: String(msg.message_id),
+    replyToId: msg.reply_to_message ? String(msg.reply_to_message.message_id) : null,
+    timestamp: new Date((msg.date || Math.floor(Date.now() / 1000)) * 1000),
+  };
 }
 
 // ============================================================
-// 輔助
+// Discord（Step 10/11 啟用）
 // ============================================================
 
-function mimeExtension(mime) {
-  const map = {
-    'application/pdf': '.pdf',
-    'image/jpeg': '.jpg',
-    'image/png': '.png',
-    'image/webp': '.webp',
+/**
+ * @param {Object} msg - discord.js Message 物件
+ * @param {Object} client - discord.js Client（取 botId 清 mention 用）
+ * @returns {Promise<Object>} adapter raw 形式
+ */
+async function normalizeDiscordInput(msg, client) {
+  ensureTmpDir();
+
+  const attachments = [];
+
+  // 下載 Discord CDN 上的附件
+  if (msg.attachments && msg.attachments.size > 0) {
+    for (const att of msg.attachments.values()) {
+      const mimeType = att.contentType || 'application/octet-stream';
+      const type = getAttachmentType(mimeType);
+      const ext = path.extname(att.name || '') || mimeExtension(mimeType);
+      const localName = `${msg.channel.id}-${Date.now()}${ext}`;
+      const filePath = path.join(TMP_DIR, localName);
+
+      const res = await fetch(att.url);
+      const buffer = Buffer.from(await res.arrayBuffer());
+      fs.writeFileSync(filePath, buffer);
+
+      attachments.push({
+        type,
+        filePath,
+        originalName: att.name || localName,
+        fileSize: att.size || buffer.length,
+        mimeType,
+      });
+    }
+  }
+
+  // 清掉 @bot mention
+  const botId = client?.user?.id;
+  let textContent = msg.content || '';
+  if (botId) {
+    textContent = textContent.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
+  }
+
+  return {
+    chatId: msg.channel.id,
+    userId: msg.author.id,
+    profile: {
+      username:      msg.author.username       || '',
+      discriminator: msg.author.discriminator  || '',
+      avatarUrl:     msg.author.displayAvatarURL?.() || '',
+    },
+    textContent,
+    attachments,
+    messageId: msg.id,
+    replyToId: msg.reference?.messageId || null,
+    timestamp: msg.createdAt || new Date(),
   };
-  return map[mime] || '';
 }
 
 // ============================================================
 // Export
 // ============================================================
 
-module.exports = { normalizeInput };
+module.exports = {
+  normalizeTelegramInput,
+  normalizeDiscordInput,
+  // 兼容舊 API（doc-agent 重構過後不再用，此處留著避免外部 require 立即斷掉）
+  normalizeInput: normalizeTelegramInput,
+};

@@ -19,10 +19,16 @@ let _bot = null;
 
 /**
  * 啟動 Dashboard server
- * @param {TelegramBot} bot — Telegram bot instance（發驗證碼用）
+ * @param {TelegramBot|Object} botOrAdapters — Telegram bot instance 或 adapters map (Step 12)
+ *   為了兼容過渡期：傳 adapters map 時抓出 telegram adapter 的內部 bot
  */
-function start(bot) {
-  _bot = bot;
+function start(botOrAdapters) {
+  // 兼容 adapters map（Step 9 launcher 傳 { telegram: TelegramAdapter, discord?: ... }）
+  if (botOrAdapters && typeof botOrAdapters === 'object' && botOrAdapters.telegram?.bot) {
+    _bot = botOrAdapters.telegram.bot;
+  } else {
+    _bot = botOrAdapters;
+  }
   const port = config.dashboard.port;
   const host = config.dashboard.host;
 

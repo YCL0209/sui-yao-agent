@@ -14,7 +14,6 @@
 
 const ism = require('../interactive-session');
 const agentRegistry = require('../agent-registry');
-const { normalizeInput } = require('../input-normalizer');
 const { classifyDocument, computeFileHash, updateDocumentStatus } = require('../document-classifier');
 const { getDocType } = require('../doc-classification');
 
@@ -48,24 +47,21 @@ const ORDER_DOC_TYPES = new Set(['quotation', 'purchase_order']);
 /**
  * 處理一個文件/圖片訊息
  *
- * 這是 doc-agent 的主入口。bot-server 收到 PDF/圖片後直接呼叫這個。
- * 不走 ISM 的 onStart（因為文件處理的「開始」是收到檔案，不是用戶打字或按按鈕）。
+ * 主入口。Adapter 收到 PDF/圖片後組好 normalized input 直接呼叫這個。
+ * 不走 ISM 的 onStart（文件處理的「開始」是收到檔案，不是用戶打字或按按鈕）。
  *
- * @param {Object} msg — Telegram message 物件
- * @param {Object} bot — TelegramBot instance（用於下載檔案）
+ * @param {Object} input — 已 normalized 的輸入：
+ *   { textContent: String|null, attachments: [{type, filePath, mimeType, ...}] }
  * @param {Object} context — { chatId, userId }
  * @returns {Promise<Object|null>} — { text, reply_markup?, _startOrder?, _parsed? } 或 null
  */
-async function handleDocument(msg, bot, context) {
+async function handleDocument(input, context) {
   const { chatId, userId } = context;
   const fs = require('fs');
   const docParser = require('../document-parser');
   const llmAdapter = require('../llm-adapter');
 
-  // 1. 正規化輸入
-  const input = await normalizeInput(msg, bot);
-
-  // 2. 分類文件
+  // 1. 分類文件
   const classification = await classifyDocument(input);
   console.log(`[doc-agent] 分類結果: category=${classification.category}, docType=${classification.docType}, confidence=${classification.confidence}`);
 
