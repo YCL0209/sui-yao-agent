@@ -57,6 +57,7 @@
       <button class="tab-btn" data-tab="memories">記憶</button>
       <button class="tab-btn" data-tab="logs">Logs</button>
       <button class="tab-btn" data-tab="conversations">對話</button>
+      <button class="tab-btn tab-users-btn" data-tab="users" style="display:none;">用戶<span class="tab-badge" id="users-tab-badge" style="display:none;"></span></button>
     </nav>
 
     <main class="tab-content">
@@ -140,6 +141,29 @@
           <span id="ws-status" style="margin-left:auto; font-size:var(--fs-small); color:var(--text-muted);"></span>
         </div>
         <div id="logs-list">
+          <div class="loading">載入中...</div>
+        </div>
+      </section>
+
+      <!-- Tab 6：用戶（admin only） -->
+      <section id="tab-users" class="tab-panel">
+        <div class="filter-bar">
+          <label>狀態</label>
+          <select id="user-filter-status">
+            <option value="pending">待審核</option>
+            <option value="">全部</option>
+            <option value="active">已啟用</option>
+            <option value="blocked">已封鎖</option>
+          </select>
+          <label>平台</label>
+          <select id="user-filter-platform">
+            <option value="">全部</option>
+            <option value="telegram">Telegram</option>
+            <option value="discord">Discord</option>
+          </select>
+          <button id="btn-refresh-users" class="btn btn-sm">🔄 刷新</button>
+        </div>
+        <div id="users-list">
           <div class="loading">載入中...</div>
         </div>
       </section>

@@ -561,6 +561,56 @@ td.col-action { text-align: right; white-space: nowrap; }
 }
 
 /* ============================================================
+   用戶管理（Tab 6）
+   ============================================================ */
+
+.badge.platform-telegram {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+.badge.platform-discord {
+  background: #e8eaff;
+  color: #4f46e5;
+}
+
+td.col-chatid {
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.role-select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  font-size: var(--fs-small);
+  background: var(--bg-card);
+  margin-right: 6px;
+}
+.role-select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+/* Tab 紅點 badge（新用戶申請時） */
+.tab-badge {
+  display: inline-block;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 6px;
+  background: var(--color-danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  border-radius: 9px;
+  vertical-align: middle;
+}
+
+/* ============================================================
    空狀態
    ============================================================ */
 

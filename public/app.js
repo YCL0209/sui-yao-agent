@@ -9,6 +9,8 @@ const state = {
   ws: null,
   wsReconnectTimer: null,
   liveLogs: [], // 接收 WS new_log 暫存
+  isAdmin: false,
+  userTabBadge: 0,
 };
 
 const TZ = { timeZone: 'Asia/Taipei' };
@@ -195,8 +197,17 @@ function handleWsMessage(msg) {
       // 只重 render 不重抓
       renderLogsAppend(existingLogs);
     }
+  } else if (msg.type === 'new_user') {
+    // 非 admin 不處理
+    if (!state.isAdmin) return;
+    if (state.currentTab === 'users') {
+      loadUsers();
+    } else {
+      state.userTabBadge += 1;
+      updateUserTabBadge();
+    }
   }
-  // new_user / new_reminder / status — 預留
+  // new_reminder / status — 預留
 }
 
 // ============================================================
@@ -219,6 +230,7 @@ function switchTab(tabName) {
     case 'memories': loadMemories(); break;
     case 'logs': loadLogs(); break;
     case 'conversations': loadConversations(); break;
+    case 'users': loadUsers(); break;
   }
 }
 
@@ -233,6 +245,18 @@ function enterDashboard() {
 
   switchTab('status');
   connectWS();
+  probeAdminAccess();
+}
+
+// 非 admin 不顯示「用戶」tab；用 GET /api/users 的 403 回應來判斷角色
+async function probeAdminAccess() {
+  try {
+    await api('GET', '/api/users');
+    state.isAdmin = true;
+    document.querySelector('.tab-users-btn').style.display = '';
+  } catch (_) {
+    state.isAdmin = false;
+  }
 }
 
 // ============================================================
@@ -636,6 +660,167 @@ function renderConversationDetail(conv) {
 }
 
 // ============================================================
+// Tab 6: 用戶（admin only）
+// ============================================================
+
+function updateUserTabBadge() {
+  const el = document.getElementById('users-tab-badge');
+  if (!el) return;
+  if (state.userTabBadge > 0) {
+    el.textContent = state.userTabBadge;
+    el.style.display = '';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+async function loadUsers() {
+  state.userTabBadge = 0;
+  updateUserTabBadge();
+  const statusFilter = document.getElementById('user-filter-status').value;
+  const platformFilter = document.getElementById('user-filter-platform').value;
+  document.getElementById('users-list').innerHTML = '<div class="loading">載入中...</div>';
+  try {
+    const { users } = await api('GET', '/api/users');
+    const filtered = users
+      .filter(u => !statusFilter || u.status === statusFilter)
+      .filter(u => !platformFilter || u.platform === platformFilter);
+    renderUsers(filtered);
+  } catch (err) {
+    document.getElementById('users-list').innerHTML = `<div class="empty-state">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderUsers(users) {
+  if (!users || users.length === 0) {
+    document.getElementById('users-list').innerHTML = emptyState('👥', '沒有符合條件的用戶');
+    return;
+  }
+
+  // pending 優先、其次 active、最後 blocked；同狀態依 createdAt 新→舊
+  const order = { pending: 0, active: 1, blocked: 2 };
+  users.sort((a, b) => {
+    const so = (order[a.status] ?? 9) - (order[b.status] ?? 9);
+    if (so !== 0) return so;
+    return new Date(b.createdAt) - new Date(a.createdAt);
+  });
+
+  const rows = users.map(u => {
+    const name = [u.profile?.firstName, u.profile?.lastName].filter(Boolean).join(' ') || '(未知)';
+    const username = u.profile?.username ? '@' + u.profile.username : '-';
+    const platformTag = u.platform === 'discord'
+      ? '<span class="badge platform-discord">Discord</span>'
+      : '<span class="badge platform-telegram">Telegram</span>';
+    const statusMap = {
+      pending: '<span class="badge badge-warning">待審核</span>',
+      active:  '<span class="badge badge-success">已啟用</span>',
+      blocked: '<span class="badge badge-danger">已封鎖</span>',
+    };
+    const statusBadge = statusMap[u.status] || `<span class="badge badge-muted">${escapeHtml(u.status)}</span>`;
+
+    // 識別是否為自己登入的帳號（best effort：比對 chatId 或 username）
+    const isSelf = state.identifier && (
+      state.identifier === u.chatId ||
+      state.identifier === '@' + (u.profile?.username || '')
+    );
+
+    let actions = '';
+    if (u.status === 'pending') {
+      actions = `
+        <button class="btn btn-sm" onclick="approveUserAction('${u.chatId}', '${u.platform}', 'user')">核准 user</button>
+        <button class="btn btn-sm btn-secondary" onclick="approveUserAction('${u.chatId}', '${u.platform}', 'advanced')">核准 advanced</button>
+        <button class="btn btn-sm btn-danger" onclick="blockUserAction('${u.chatId}', '${u.platform}')">封鎖</button>`;
+    } else if (u.status === 'active') {
+      actions = `
+        <select class="role-select" onchange="changeUserRole('${u.chatId}', '${u.platform}', this.value, '${u.role}')">
+          <option value="user" ${u.role === 'user' ? 'selected' : ''}>user</option>
+          <option value="advanced" ${u.role === 'advanced' ? 'selected' : ''}>advanced</option>
+          <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
+        </select>
+        ${isSelf ? '' : `<button class="btn btn-sm btn-danger" onclick="blockUserAction('${u.chatId}', '${u.platform}')">封鎖</button>`}`;
+    } else if (u.status === 'blocked') {
+      actions = `<button class="btn btn-sm" onclick="unblockUserAction('${u.chatId}', '${u.platform}')">解封</button>`;
+    }
+
+    return `
+      <tr>
+        <td>${platformTag}</td>
+        <td>${escapeHtml(name)}</td>
+        <td>${escapeHtml(username)}</td>
+        <td class="col-chatid">${escapeHtml(u.chatId)}</td>
+        <td>${escapeHtml(u.role || 'user')}</td>
+        <td>${statusBadge}</td>
+        <td class="col-time">${fmtDateShort(u.createdAt)}</td>
+        <td class="col-action">${actions}</td>
+      </tr>`;
+  }).join('');
+
+  document.getElementById('users-list').innerHTML = `
+    <div class="table-wrapper">
+      <table>
+        <thead><tr>
+          <th>平台</th><th>姓名</th><th>Username</th><th>Chat ID</th><th>角色</th><th>狀態</th><th>建立時間</th><th></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function approveUserAction(chatId, platform, role) {
+  const roleLabel = { user: '一般用戶', advanced: '高級用戶' }[role] || role;
+  if (!confirm(`確定核准此用戶為${roleLabel}？`)) return;
+  try {
+    await api('PUT', `/api/users/${encodeURIComponent(chatId)}`, { status: 'active', role, platform });
+    if (platform === 'discord') {
+      alert('✅ 已核准\n\n📋 記得為此 Discord 用戶建立操作 channel\n   參考：docs/discord-add-user-sop.md');
+    }
+    loadUsers();
+  } catch (err) {
+    alert('核准失敗：' + err.message);
+  }
+}
+
+async function blockUserAction(chatId, platform) {
+  if (!confirm('確定封鎖此用戶？封鎖後該用戶訊息會被 bot 忽略。')) return;
+  try {
+    await api('PUT', `/api/users/${encodeURIComponent(chatId)}`, { status: 'blocked', platform });
+    loadUsers();
+  } catch (err) {
+    alert('封鎖失敗：' + err.message);
+  }
+}
+
+async function unblockUserAction(chatId, platform) {
+  if (!confirm('確定解封此用戶？')) return;
+  try {
+    await api('PUT', `/api/users/${encodeURIComponent(chatId)}`, { status: 'active', role: 'user', platform });
+    loadUsers();
+  } catch (err) {
+    alert('解封失敗：' + err.message);
+  }
+}
+
+async function changeUserRole(chatId, platform, newRole, originalRole) {
+  if (newRole === originalRole) return;
+  const roleLabel = { user: '一般用戶', advanced: '高級用戶', admin: '管理員' }[newRole] || newRole;
+  const msg = newRole === 'admin'
+    ? `⚠️ 改為「管理員」會讓此用戶取得全部權限（含管理其他用戶、刪除資料）。\n\n確定繼續嗎？`
+    : `確定將角色改為「${roleLabel}」？`;
+  if (!confirm(msg)) {
+    loadUsers(); // 還原下拉選項
+    return;
+  }
+  try {
+    await api('PUT', `/api/users/${encodeURIComponent(chatId)}`, { role: newRole, platform });
+    loadUsers();
+  } catch (err) {
+    alert('更新失敗：' + err.message);
+    loadUsers();
+  }
+}
+
+// ============================================================
 // 初始化
 // ============================================================
 
@@ -669,6 +854,9 @@ function init() {
   document.getElementById('log-status').addEventListener('change', loadLogs);
   document.getElementById('log-limit').addEventListener('change', loadLogs);
   document.getElementById('btn-refresh-conversations').addEventListener('click', loadConversations);
+  document.getElementById('btn-refresh-users').addEventListener('click', loadUsers);
+  document.getElementById('user-filter-status').addEventListener('change', loadUsers);
+  document.getElementById('user-filter-platform').addEventListener('change', loadUsers);
 
   // 還原 identifier
   if (state.identifier) {
