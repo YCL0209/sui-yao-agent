@@ -52,9 +52,9 @@ async function ensureAllIndexes() {
     { key: { key: 1 }, name: 'idx_key', unique: true },
   ]);
 
-  // 對話歷史（E5 新增）
+  // 對話歷史（I1：複合 key，支援多平台）
   await safeCreateIndexes(db.collection('conversations'), [
-    { key: { chatId: 1 }, name: 'idx_chatId', unique: true },
+    { key: { platform: 1, chatId: 1 }, name: 'platform_chatId_unique', unique: true },
   ]);
 
   // 業務資料
@@ -111,22 +111,24 @@ async function ensureAllIndexes() {
     { key: { skill: 1, status: 1 }, name: 'idx_skill_status' },
   ]);
 
-  // 用戶（H1 多用戶 + 權限）
+  // 用戶（H1 多用戶 + 權限；I1 複合 key 多平台）
   await safeCreateIndexes(db.collection('users'), [
-    { key: { chatId: 1 }, name: 'idx_chatId', unique: true },
+    { key: { platform: 1, chatId: 1 }, name: 'platform_chatId_unique', unique: true },
     { key: { userId: 1 }, name: 'idx_userId', unique: true },
     { key: { status: 1 }, name: 'idx_status' },
     { key: { role: 1 }, name: 'idx_role' },
   ]);
 
-  // 確保 admin 用戶存在
+  // 確保 admin 用戶存在（chatId 統一為 String，platform=telegram）
   if (appConfig.telegram.adminChatId) {
+    const adminChatId = String(appConfig.telegram.adminChatId);
     await db.collection('users').updateOne(
-      { chatId: Number(appConfig.telegram.adminChatId) },
+      { platform: 'telegram', chatId: adminChatId },
       {
         $setOnInsert: {
-          chatId: Number(appConfig.telegram.adminChatId),
-          userId: `telegram:${appConfig.telegram.adminChatId}`,
+          platform: 'telegram',
+          chatId: adminChatId,
+          userId: `telegram:${adminChatId}`,
           profile: { firstName: 'Admin' },
           role: 'admin',
           status: 'active',
