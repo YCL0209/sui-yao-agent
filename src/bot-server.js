@@ -129,16 +129,16 @@ function startBot() {
 
         if (action === 'approve') {
           const roleName = role === 'advanced' ? '高級用戶' : '一般用戶';
-          await auth.approveUser(targetChatId, 'approve', role, userId);
+          await auth.approveUser('telegram', targetChatId, 'approve', role, userId);
           await sendReply(bot, chatId, `✅ 已核准 ${targetChatId} 為${roleName}`);
           try { await bot.sendMessage(targetChatId, adminAgent.MESSAGES.welcomeAfterApproval); } catch (_) {}
         } else if (action === 'block') {
-          await auth.approveUser(targetChatId, 'block', null, userId);
+          await auth.approveUser('telegram', targetChatId, 'block', null, userId);
           await sendReply(bot, chatId, `🚫 已封鎖 ${targetChatId}`);
         } else if (action === 'setrole') {
           const newRole = parts[3] || 'user';
           const roleLabels = { admin: '管理員', advanced: '高級用戶', user: '一般用戶' };
-          await auth.setUserRole(targetChatId, newRole);
+          await auth.setUserRole('telegram', targetChatId, newRole);
           await sendReply(bot, chatId, `✅ 已將 ${targetChatId} 角色改為「${roleLabels[newRole] || newRole}」`);
           try { await bot.sendMessage(targetChatId, `📢 您的角色已更新為「${roleLabels[newRole] || newRole}」。`); } catch (_) {}
         }
@@ -263,7 +263,17 @@ function startBot() {
     }
 
     // ======== 認證閘 ========
-    const authResult = await auth.authenticate(msg);
+    const from = msg.from || {};
+    const authResult = await auth.authenticate({
+      platform: 'telegram',
+      chatId: msg.chat.id,
+      profile: {
+        firstName:    from.first_name || '',
+        lastName:     from.last_name  || '',
+        username:     from.username   || '',
+        languageCode: from.language_code || '',
+      },
+    });
 
     if (authResult.status === 'new') {
       await bot.sendMessage(chatId, adminAgent.MESSAGES.pendingReply);
@@ -403,10 +413,10 @@ function startBot() {
             ],
           });
         } else if (cmd === '封鎖用戶') {
-          await auth.approveUser(target.chatId, 'block', null, userId);
+          await auth.approveUser('telegram', target.chatId, 'block', null, userId);
           await sendReply(bot, chatId, `🚫 已封鎖「${targetName}」`);
         } else if (cmd === '解封用戶') {
-          await auth.approveUser(target.chatId, 'approve', target.role || 'user', userId);
+          await auth.approveUser('telegram', target.chatId, 'approve', target.role || 'user', userId);
           await sendReply(bot, chatId, `✅ 已解封「${targetName}」`);
         }
         return;

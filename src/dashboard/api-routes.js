@@ -236,9 +236,10 @@ async function handleRequest(req, res, bot) {
     const body = await readBody(req);
     const { role, status } = JSON.parse(body || '{}');
 
-    if (role) await auth.setUserRole(targetChatId, role);
-    if (status === 'blocked') await auth.approveUser(targetChatId, 'block');
-    if (status === 'active') await auth.approveUser(targetChatId, 'approve', role || 'user', session.userId);
+    // TODO Step 12: dashboard 要支援多平台時改傳 user 來源 platform
+    if (role) await auth.setUserRole('telegram', targetChatId, role);
+    if (status === 'blocked') await auth.approveUser('telegram', targetChatId, 'block');
+    if (status === 'active') await auth.approveUser('telegram', targetChatId, 'approve', role || 'user', session.userId);
 
     return sendJSON(res, 200, { success: true });
   }
