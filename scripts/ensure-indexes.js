@@ -31,6 +31,30 @@ async function safeCreateIndexes(collection, specs) {
   }
 }
 
+/**
+ * Upsert admin 用戶（跨平台）
+ */
+async function ensureAdmin(db, platform, chatId) {
+  const chatIdStr = String(chatId);
+  await db.collection('users').updateOne(
+    { platform, chatId: chatIdStr },
+    {
+      $setOnInsert: {
+        platform,
+        chatId: chatIdStr,
+        userId: `${platform}:${chatIdStr}`,
+        profile: { firstName: 'Admin' },
+        role: 'admin',
+        status: 'active',
+        createdAt: new Date(),
+        approvedAt: new Date(),
+        approvedBy: 'system',
+      }
+    },
+    { upsert: true }
+  );
+}
+
 async function ensureAllIndexes() {
   const db = await mongo.getDb();
   console.log('[ensure-indexes] 開始建立索引...');
@@ -119,27 +143,18 @@ async function ensureAllIndexes() {
     { key: { role: 1 }, name: 'idx_role' },
   ]);
 
-  // 確保 admin 用戶存在（chatId 統一為 String，platform=telegram）
+  // 確保 admin 用戶存在（chatId 統一為 String，支援多平台）
   if (appConfig.telegram.adminChatId) {
-    const adminChatId = String(appConfig.telegram.adminChatId);
-    await db.collection('users').updateOne(
-      { platform: 'telegram', chatId: adminChatId },
-      {
-        $setOnInsert: {
-          platform: 'telegram',
-          chatId: adminChatId,
-          userId: `telegram:${adminChatId}`,
-          profile: { firstName: 'Admin' },
-          role: 'admin',
-          status: 'active',
-          createdAt: new Date(),
-          approvedAt: new Date(),
-          approvedBy: 'system',
-        }
-      },
-      { upsert: true }
-    );
-    console.log('[ensure-indexes] ✅ admin 用戶已確認');
+    await ensureAdmin(db, 'telegram', appConfig.telegram.adminChatId);
+    console.log('[ensure-indexes] ✅ Telegram admin 用戶已確認');
+  }
+
+  const discordAdmins = appConfig.discord.adminUserIds || [];
+  if (discordAdmins.length > 0) {
+    for (const id of discordAdmins) {
+      await ensureAdmin(db, 'discord', id);
+    }
+    console.log(`[ensure-indexes] ✅ Discord admin 用戶已確認 (${discordAdmins.length})`);
   }
 
   // 確保系統排程任務存在（部署時自動建好）
