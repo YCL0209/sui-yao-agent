@@ -308,17 +308,32 @@ class Orchestrator {
     return { text: lines.join('\n') };
   }
 
-  _handleNewUser(authResult, platform) {
+  _handleNewUser(authResult, _platform) {
+    // broadcast 以 admin 接收端為準，不以申請者 platform
+    // 否則 Discord 用戶申請時會把 Telegram adminChatId 送到 Discord adapter，訊息發不出去
     const notification = adminAgent.getNewUserNotification(authResult.user);
-    const adminBroadcast = {
-      platform,                    // admin 仍是 telegram 帳號（adminChatId 是 telegram）
-      chatId: config.telegram.adminChatId,
-      text: notification.text,
-      buttons: inlineKeyboardToButtons(notification.reply_markup),
-    };
+    const broadcasts = [];
+
+    if (config.telegram.adminChatId) {
+      broadcasts.push({
+        platform: 'telegram',
+        chatId: config.telegram.adminChatId,
+        text: notification.text,
+        buttons: inlineKeyboardToButtons(notification.reply_markup),
+      });
+    } else if (config.discord.adminUserIds?.length > 0) {
+      // 只有 Discord admin 時才 fallback（避免兩個平台重複通知）
+      broadcasts.push({
+        platform: 'discord',
+        chatId: config.discord.adminUserIds[0],
+        text: notification.text,
+        buttons: inlineKeyboardToButtons(notification.reply_markup),
+      });
+    }
+
     return {
       text: adminAgent.MESSAGES.pendingReply,
-      _broadcast: [adminBroadcast],
+      _broadcast: broadcasts,
       _newUser: authResult.user,    // adapter 可推給 dashboard ws
     };
   }

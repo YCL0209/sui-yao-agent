@@ -296,7 +296,19 @@ class TelegramAdapter extends MessageAdapter {
     if (action === 'approve') {
       const roleName = role === 'advanced' ? '高級用戶' : '一般用戶';
       await auth.approveUser('telegram', targetChatId, 'approve', role, userId);
-      await this.sendText(chatId, `✅ 已核准 ${targetChatId} 為${roleName}`);
+
+      // 查 target user 的 platform，若為 discord 則 append 建 channel 提醒
+      // 注意：approveUser 目前第一參數 hardcode 為 'telegram'，Discord 用戶核准實際會失敗
+      // 這段提醒邏輯為未來（approveUser 跨平台修好 / Dashboard 審核）預留
+      const matching = await auth.listUsers({ chatId: String(targetChatId) });
+      const targetUser = matching[0];
+
+      let reply = `✅ 已核准 ${targetChatId} 為${roleName}`;
+      if (targetUser?.platform === 'discord') {
+        reply += '\n\n📋 記得為此用戶建立 Discord 操作 channel';
+        reply += '\n   參考：docs/discord-add-user-sop.md';
+      }
+      await this.sendText(chatId, reply);
       try { await this.bot.sendMessage(Number(targetChatId), adminAgent.MESSAGES.welcomeAfterApproval); } catch (_) {}
     } else if (action === 'block') {
       await auth.approveUser('telegram', targetChatId, 'block', null, userId);
