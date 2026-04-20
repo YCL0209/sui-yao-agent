@@ -72,15 +72,16 @@
 - **索引**：`{ key: 1 }` (unique)
 - **保留策略**：手動管理
 
-#### conversations（E5 新增）
+#### conversations（E5 新增，I1 加入 platform）
 - **用途**：對話歷史持久化（取代 chatHistories Map）
-- **寫入者**：bot-server.js（每次對話更新）
-- **讀取者**：bot-server.js（handleMessage 取得歷史）
+- **寫入者**：session.saveHistory（每次對話更新）
+- **讀取者**：session.loadHistory（orchestrator 取得歷史）
 - **Schema**：
   ```javascript
   {
-    chatId: 8331678146,              // Telegram chat ID (number)
-    userId: "telegram:8331678146",
+    platform: "discord",             // "telegram" | "discord"（I1 加入）
+    chatId: "1234567890",            // 統一 String（支援 Discord 19 位 snowflake）
+    userId: "discord:1234567890",
     messages: [
       { role: "user", content: "你好", ts: ISODate },
       { role: "assistant", content: "早，有什麼需要處理的？", ts: ISODate },
@@ -88,7 +89,7 @@
     updatedAt: ISODate,
   }
   ```
-- **索引**：`{ chatId: 1 }` (unique)
+- **索引**：`{ platform: 1, chatId: 1 }` (unique)（I1 複合 key）
 - **保留策略**：每筆訊息上限由 saveHistory 控制；整個 chat 的 updatedAt 超過 90 天由 db-cleanup 自動刪除
 
 ---
@@ -235,6 +236,44 @@
   ```
 - **索引**：`{ timestamp: -1 }`, `{ userId: 1, timestamp: -1 }`, `{ skill: 1, status: 1 }`
 - **保留策略**：90 天後由 db-cleanup 自動刪除
+
+---
+
+### 七、用戶與權限（H1 新增，I1 多平台）
+
+#### users
+- **用途**：用戶帳號、角色、狀態（單一事實來源）
+- **寫入者**：auth.js（自動註冊 + 審核）、dashboard/api-routes（改角色 / 封鎖）
+- **讀取者**：auth.authenticate、listUsers、orchestrator._handleNewUser
+- **Schema**：
+  ```javascript
+  {
+    platform: "discord",              // "telegram" | "discord"（I1 加入）
+    chatId: "1234567890",             // 統一 String
+    userId: "discord:1234567890",     // `${platform}:${chatId}`
+    profile: {
+      firstName: "Alice",
+      lastName: "",
+      username: "alice",
+      languageCode: "zh-TW",
+      discriminator: "",              // Discord 舊版 4 碼
+      avatarUrl: "",
+    },
+    role: "user",                     // admin | advanced | user
+    status: "active",                 // pending | active | blocked
+    overrides: { "skill-name": true },// 可選，單 skill 權限覆寫
+    createdAt: ISODate,
+    lastActiveAt: ISODate,
+    approvedAt: ISODate,
+    approvedBy: "userId-of-admin" | "system",
+  }
+  ```
+- **索引**：
+  - `{ platform: 1, chatId: 1 }` (unique) — I1 複合 key
+  - `{ userId: 1 }` (unique)
+  - `{ status: 1 }`, `{ role: 1 }`
+- **保留策略**：手動管理（帳號不自動清理）
+- **自動 upsert**：`scripts/ensure-indexes.js` 在啟動時會依 `TELEGRAM_ADMIN_CHAT_ID` / `DISCORD_ADMIN_USERS` 建立 admin 帳號
 
 ---
 
