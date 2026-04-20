@@ -59,6 +59,11 @@ function confirmButtons() {
         { text: '✅ 確認建單', callback_data: 'order:confirm' },
         { text: '❌ 取消', callback_data: 'order:cancel' },
       ],
+      [
+        { text: '×2', callback_data: 'order:qty:mul:2' },
+        { text: '×3', callback_data: 'order:qty:mul:3' },
+        { text: '×5', callback_data: 'order:qty:mul:5' },
+      ],
     ],
   };
 }
@@ -84,13 +89,16 @@ function customerChoiceButtons(matches) {
   return { inline_keyboard: buttons };
 }
 
-function pdfButtons(orderNumber) {
-  return {
-    inline_keyboard: [
-      [
+function pdfButtons(orderNumber, orderType) {
+  const docButtons = orderType === 'purchase'
+    ? [{ text: '📄 採購單', callback_data: `order:pdf:purchase:${orderNumber}` }]
+    : [
         { text: '📄 報價單', callback_data: `order:pdf:quotation:${orderNumber}` },
         { text: '📄 銷貨單', callback_data: `order:pdf:sales:${orderNumber}` },
-      ],
+      ];
+  return {
+    inline_keyboard: [
+      docButtons,
       [{ text: '⏭️ 不用', callback_data: 'order:pdf:skip' }],
     ],
   };
@@ -124,7 +132,76 @@ function formatOrderSummary(sess) {
     + `類型：${typeName}\n`
     + `客戶：${customerName}${company}\n`
     + `品項：\n${itemLines}\n`
-    + `合計：NT$ ${total.toLocaleString()}${total === 0 ? ' (待補價格)' : ''}\n`;
+    + `合計：NT$ ${total.toLocaleString()}${total === 0 ? ' (待補價格)' : ''}\n`
+    + `\n💡 可按倍數鈕或輸入「全部 3」「MADLN02BD 改 5」調整數量`;
+}
+
+// ========================================
+// 數量調整解析（confirm 步驟的文字輸入）
+// ========================================
+
+function applyQtyEdit(text, items) {
+  if (!items.length) return { matched: false };
+
+  // 整單倍數：×3 / x3 / *3（單獨一個 token）
+  const mulMatch = text.match(/^\s*[×x*]\s*(\d{1,2})\s*$/i);
+  if (mulMatch) {
+    const n = parseInt(mulMatch[1], 10);
+    if (n >= 1 && n <= 99) {
+      return {
+        matched: true,
+        items: items.map(it => ({ ...it, quantity: (it.quantity || 1) * n })),
+        feedback: `✅ 已將所有品項數量 ×${n}`,
+      };
+    }
+  }
+
+  // 全部設為 N：全部 3 / 每項 3 / 都 3 / 都改 3 / 全部改 3
+  const allMatch = text.match(/^\s*(?:全部|每項|每個|都)(?:改|設為|改成)?\s*(\d{1,3})\s*(?:個|組|台|條|支)?\s*$/);
+  if (allMatch) {
+    const n = parseInt(allMatch[1], 10);
+    if (n >= 1 && n <= 999) {
+      return {
+        matched: true,
+        items: items.map(it => ({ ...it, quantity: n })),
+        feedback: `✅ 已將所有品項數量設為 ${n}`,
+      };
+    }
+  }
+
+  // 指定品項：<keyword> [改|x|×|*]? N
+  const itemMatch = text.match(/^\s*(.+?)\s*(?:改|改成|設為|[x×*])\s*(\d{1,3})\s*(?:個|組|台|條|支)?\s*$/i);
+  if (itemMatch) {
+    const keyword = itemMatch[1].trim();
+    const n = parseInt(itemMatch[2], 10);
+    if (n >= 1 && n <= 999 && keyword.length >= 1) {
+      const kwLower = keyword.toLowerCase();
+      const hits = [];
+      const newItems = items.map((it, idx) => {
+        const code = (it.productCode || '').toLowerCase();
+        const name = (it.matchedName || it.originalName || it.name || '').toLowerCase();
+        const origName = (it.originalName || '').toLowerCase();
+        const isHit = code === kwLower
+          || (code && code.includes(kwLower))
+          || (name && name.includes(kwLower))
+          || (origName && origName.includes(kwLower));
+        if (isHit) {
+          hits.push(it.productCode || it.matchedName || it.name);
+          return { ...it, quantity: n };
+        }
+        return it;
+      });
+      if (hits.length > 0) {
+        return {
+          matched: true,
+          items: newItems,
+          feedback: `✅ 已將「${hits.join('、')}」數量設為 ${n}`,
+        };
+      }
+    }
+  }
+
+  return { matched: false };
 }
 
 // ========================================
@@ -222,6 +299,25 @@ const orderHandler = {
       return { text: MESSAGES.askCustomer };
     }
 
+    // qty:mul:N — 整單數量 ×N
+    if (action === 'qty') {
+      const [sub, arg] = (payload || '').split(':');
+      if (sub === 'mul') {
+        const n = parseInt(arg, 10);
+        if (n >= 2 && n <= 99 && session.data.items?.length) {
+          session.data.items = session.data.items.map(it => ({
+            ...it,
+            quantity: (it.quantity || 1) * n,
+          }));
+          return {
+            text: `✅ 已將所有品項數量 ×${n}\n\n` + formatOrderSummary(session),
+            reply_markup: confirmButtons(),
+          };
+        }
+      }
+      return { text: MESSAGES.unknownAction };
+    }
+
     // confirm — 確認建單，送 ERP
     if (action === 'confirm') {
       try {
@@ -229,7 +325,7 @@ const orderHandler = {
         const orderNumber = result.orderNumber;
         return {
           text: MESSAGES.orderCreated(orderNumber),
-          reply_markup: pdfButtons(orderNumber),
+          reply_markup: pdfButtons(orderNumber, session.data.type),
           done: true, // 建單完成，清除 session
         };
       } catch (err) {
@@ -329,6 +425,19 @@ const orderHandler = {
         text: formatOrderSummary(session),
         reply_markup: confirmButtons(),
       };
+    }
+
+    // confirm 步驟：允許打字調整數量（×3、全部 3、MADLN02BD 改 5 …）
+    if (session.step === 'confirm') {
+      const result = applyQtyEdit(trimmed, session.data.items || []);
+      if (result.matched) {
+        session.data.items = result.items;
+        return {
+          text: result.feedback + '\n\n' + formatOrderSummary(session),
+          reply_markup: confirmButtons(),
+        };
+      }
+      // 沒 match 就不攔截，讓主流程接手
     }
 
     return null; // 不攔截，交回主流程
