@@ -41,7 +41,7 @@ const config = {
     adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID,
   },
 
-  // Discord（I1：第二通道）
+  // Discord（I1：第二通道；I2：物理隔離策略，白名單 channel 內才回）
   discord: {
     enabled:           process.env.DISCORD_ENABLED === 'true',
     token:             process.env.DISCORD_TOKEN,
@@ -49,7 +49,6 @@ const config = {
     allowedChannelIds: parseList(process.env.DISCORD_ALLOWED_CHANNELS),
     allowedUserIds:    parseList(process.env.DISCORD_ALLOWED_USERS),
     adminUserIds:      parseList(process.env.DISCORD_ADMIN_USERS),
-    triggerMode:       process.env.DISCORD_TRIGGER_MODE || 'both',  // mention | channel | both
     maxMessageLength:  parseInt(process.env.DISCORD_MAX_MESSAGE_LEN) || 1900,
   },
 
@@ -276,7 +275,7 @@ config.printSummary = function() {
   console.log(`\n📋 穗鈅助手 v${config.app.version} 設定摘要`);
   console.log(`   環境：${config.app.nodeEnv}`);
   console.log(`   Telegram：${tgState}`);
-  console.log(`   Discord ：${dcState} (mode=${config.discord.triggerMode})`);
+  console.log(`   Discord ：${dcState}`);
   console.log(`   OpenAI：${mask(config.llm.openaiApiKey)}`);
   console.log(`   Chat Provider：${config.llm.chatProvider}`);
   console.log(`   預設模型：${config.llm.defaultModel}`);

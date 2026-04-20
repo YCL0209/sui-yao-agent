@@ -214,7 +214,7 @@ class DiscordAdapter extends MessageAdapter {
   // ============================================================
 
   _shouldRespond(msg) {
-    // DM
+    // DM：若有 allowedUserIds 限制則檢查，否則允許
     if (!msg.guild) {
       if (this.dcConfig.allowedUserIds.length === 0) return true;
       return this.dcConfig.allowedUserIds.includes(msg.author.id);
@@ -226,16 +226,8 @@ class DiscordAdapter extends MessageAdapter {
       return false;
     }
 
-    const inAllowedChannel = this.dcConfig.allowedChannelIds.length === 0
-      || this.dcConfig.allowedChannelIds.includes(msg.channel.id);
-    const mentioned = msg.mentions.has(this.client.user);
-
-    switch (this.dcConfig.triggerMode) {
-      case 'mention': return mentioned;
-      case 'channel': return inAllowedChannel;
-      case 'both':
-      default:        return inAllowedChannel || mentioned;
-    }
+    // 白名單 channel 內才回；其他（含 @mention）一律忽略（物理隔離策略）
+    return this.dcConfig.allowedChannelIds.includes(msg.channel.id);
   }
 
   // ============================================================
