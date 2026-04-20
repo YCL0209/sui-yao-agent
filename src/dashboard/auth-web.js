@@ -1,31 +1,36 @@
 /**
- * 穗鈅助手 — Dashboard 登入驗證
+ * 穗鈅助手 — Dashboard 登入驗證（Phase I1 多平台）
  *
  * 流程：
- * 1. 用戶在 Dashboard 輸入 Telegram username 或 chatId
- * 2. 後端產生 6 位驗證碼，透過 bot 發到用戶的 Telegram
+ * 1. 用戶在 Dashboard 輸入 username 或 chatId
+ * 2. 後端找出 user 並產生 6 位驗證碼，透過對應平台的 adapter 發給用戶
  * 3. 用戶在 Dashboard 輸入驗證碼
  * 4. 驗證通過 → 發 session token
  *
  * 只有 admin 和 advanced 能登入 Dashboard。
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 const crypto = require('crypto');
 const auth = require('../auth');
 const config = require('../config');
 
-// 暫存驗證碼：{ chatId: { code, expiresAt, attempts, userId, role } }
+// key = `${platform}:${chatId}`
 const _pendingCodes = new Map();
-
-// 暫存 session token：{ token: { chatId, userId, role, expiresAt } }
 const _sessions = new Map();
 
-// Rate limit：每個 identifier 每分鐘最多 3 次
+// Rate limit
 const _rateLimits = new Map();
 const RATE_LIMIT_WINDOW = 60000;
 const RATE_LIMIT_MAX = 3;
+
+const SESSION_TTL = 24 * 60 * 60 * 1000;
+const MAX_ATTEMPTS = 5;
+
+function makeKey(platform, chatId) {
+  return `${platform}:${chatId}`;
+}
 
 function checkRateLimit(identifier) {
   const now = Date.now();
@@ -39,79 +44,79 @@ function checkRateLimit(identifier) {
   return record.count <= RATE_LIMIT_MAX;
 }
 
-const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 小時
-const MAX_ATTEMPTS = 5;
+/**
+ * 由 identifier 找 user（支援 chatId、username、username#discriminator）
+ */
+async function findUser(identifier) {
+  const users = await auth.listUsers();
+  const target = String(identifier).toLowerCase().replace('@', '');
+  return users.find(u =>
+    String(u.chatId) === String(identifier)
+    || (u.profile?.username || '').toLowerCase() === target
+  );
+}
 
 /**
- * 產生驗證碼並回傳 chatId（由 API route 呼叫）
- * @param {string} identifier — Telegram username（不含@）或 chatId
- * @returns {Promise<{ success, chatId, displayName, error? }>}
+ * 產生驗證碼
+ * @returns {Promise<{ success, chatId, platform, displayName, error? }>}
  */
 async function requestVerifyCode(identifier) {
   if (!checkRateLimit(identifier)) {
     return { success: false, error: '請求過於頻繁，請稍後再試' };
   }
 
-  const users = await auth.listUsers();
-  const target = String(identifier).toLowerCase().replace('@', '');
-  const user = users.find(u => {
-    return String(u.chatId) === String(identifier)
-      || (u.profile?.username || '').toLowerCase() === target;
-  });
+  const user = await findUser(identifier);
+  if (!user) return { success: false, error: '找不到此用戶' };
+  if (user.status !== 'active') return { success: false, error: '此帳號尚未啟用' };
+  if (user.role === 'user') return { success: false, error: '權限不足，無法登入 Dashboard' };
 
-  if (!user) {
-    return { success: false, error: '找不到此用戶' };
-  }
-
-  if (user.status !== 'active') {
-    return { success: false, error: '此帳號尚未啟用' };
-  }
-
-  // 只有 admin 和 advanced 能登入 Dashboard
-  if (user.role === 'user') {
-    return { success: false, error: '權限不足，無法登入 Dashboard' };
-  }
-
-  // 產生 6 位數字驗證碼
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const ttl = config.dashboard.verifyCodeTTL || 300000;
+  const platform = user.platform || 'telegram';
+  const chatId = String(user.chatId);
 
-  _pendingCodes.set(user.chatId, {
+  _pendingCodes.set(makeKey(platform, chatId), {
     code,
     expiresAt: Date.now() + ttl,
     attempts: 0,
     userId: user.userId,
     role: user.role,
+    platform,
+    chatId,
   });
 
   return {
     success: true,
-    chatId: user.chatId,
-    displayName: [user.profile?.firstName, user.profile?.lastName].filter(Boolean).join(' ') || 'Admin',
+    chatId,
+    platform,
+    displayName: [user.profile?.firstName, user.profile?.lastName].filter(Boolean).join(' ')
+                  || user.profile?.username
+                  || 'Admin',
   };
 }
 
 /**
  * 驗證碼比對
- * @param {number} chatId
+ * @param {string} platform
+ * @param {string} chatId
  * @param {string} code
- * @returns {{ success, token?, error? }}
  */
-function verifyCode(chatId, code) {
-  const pending = _pendingCodes.get(Number(chatId));
+function verifyCode(platform, chatId, code) {
+  const key = makeKey(platform, String(chatId));
+  const pending = _pendingCodes.get(key);
 
   if (!pending) {
     return { success: false, error: '未找到驗證碼，請重新請求' };
   }
 
   if (Date.now() > pending.expiresAt) {
-    _pendingCodes.delete(Number(chatId));
+    _pendingCodes.delete(key);
     return { success: false, error: '驗證碼已過期，請重新請求' };
   }
 
   pending.attempts++;
   if (pending.attempts > MAX_ATTEMPTS) {
-    _pendingCodes.delete(Number(chatId));
+    _pendingCodes.delete(key);
     return { success: false, error: '嘗試次數過多，請重新請求' };
   }
 
@@ -119,12 +124,13 @@ function verifyCode(chatId, code) {
     return { success: false, error: `驗證碼錯誤（剩餘 ${MAX_ATTEMPTS - pending.attempts} 次）` };
   }
 
-  // 驗證通過 → 發 token
-  _pendingCodes.delete(Number(chatId));
+  // 驗證通過
+  _pendingCodes.delete(key);
   const token = crypto.randomBytes(32).toString('hex');
 
   _sessions.set(token, {
-    chatId: Number(chatId),
+    chatId: String(chatId),
+    platform,
     userId: pending.userId,
     role: pending.role,
     expiresAt: Date.now() + SESSION_TTL,
@@ -133,11 +139,6 @@ function verifyCode(chatId, code) {
   return { success: true, token };
 }
 
-/**
- * 驗證 session token
- * @param {string} token
- * @returns {{ valid, session? }}
- */
 function validateToken(token) {
   if (!token) return { valid: false };
   const session = _sessions.get(token);
@@ -149,26 +150,20 @@ function validateToken(token) {
   return { valid: true, session };
 }
 
-/**
- * 登出
- */
 function logout(token) {
   _sessions.delete(token);
 }
 
-/**
- * 定時清理過期的 session 和驗證碼
- */
 function cleanup() {
   const now = Date.now();
-  for (const [chatId, pending] of _pendingCodes) {
-    if (now > pending.expiresAt) _pendingCodes.delete(chatId);
+  for (const [k, pending] of _pendingCodes) {
+    if (now > pending.expiresAt) _pendingCodes.delete(k);
   }
   for (const [token, session] of _sessions) {
     if (now > session.expiresAt) _sessions.delete(token);
   }
-  for (const [key, record] of _rateLimits) {
-    if (now - record.start > RATE_LIMIT_WINDOW) _rateLimits.delete(key);
+  for (const [k, record] of _rateLimits) {
+    if (now - record.start > RATE_LIMIT_WINDOW) _rateLimits.delete(k);
   }
 }
 
@@ -180,5 +175,6 @@ module.exports = {
   verifyCode,
   validateToken,
   logout,
-  _pendingCodes, // 給 api-routes 發驗證碼時讀取
+  findUser,
+  _pendingCodes,
 };

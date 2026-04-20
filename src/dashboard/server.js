@@ -15,20 +15,14 @@ const apiRoutes = require('./api-routes');
 const wsManager = require('./ws-manager');
 
 let _server = null;
-let _bot = null;
+let _adapters = null;
 
 /**
  * 啟動 Dashboard server
- * @param {TelegramBot|Object} botOrAdapters — Telegram bot instance 或 adapters map (Step 12)
- *   為了兼容過渡期：傳 adapters map 時抓出 telegram adapter 的內部 bot
+ * @param {Object} adapters — { telegram?: TelegramAdapter, discord?: DiscordAdapter }
  */
-function start(botOrAdapters) {
-  // 兼容 adapters map（Step 9 launcher 傳 { telegram: TelegramAdapter, discord?: ... }）
-  if (botOrAdapters && typeof botOrAdapters === 'object' && botOrAdapters.telegram?.bot) {
-    _bot = botOrAdapters.telegram.bot;
-  } else {
-    _bot = botOrAdapters;
-  }
+function start(adapters) {
+  _adapters = adapters || {};
   const port = config.dashboard.port;
   const host = config.dashboard.host;
 
@@ -38,7 +32,7 @@ function start(botOrAdapters) {
     // API 路由
     if (pathname.startsWith('/api/')) {
       try {
-        await apiRoutes.handleRequest(req, res, _bot);
+        await apiRoutes.handleRequest(req, res, _adapters);
       } catch (err) {
         console.error('[dashboard] API error:', err);
         res.writeHead(500, { 'Content-Type': 'application/json' });

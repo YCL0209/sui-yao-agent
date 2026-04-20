@@ -19,12 +19,14 @@ const config = require('../config');
  * 處理 API 請求
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse} res
- * @param {TelegramBot} bot — 發驗證碼用
+ * @param {Object} adapters — { telegram?: TelegramAdapter, discord?: DiscordAdapter }
  */
-async function handleRequest(req, res, bot) {
+async function handleRequest(req, res, adapters) {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
   const query = parsedUrl.query;
+
+  adapters = adapters || {};
 
   // CORS（本機用，寬鬆）
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -41,13 +43,21 @@ async function handleRequest(req, res, bot) {
     const result = await authWeb.requestVerifyCode(identifier);
 
     if (result.success) {
-      const pending = authWeb._pendingCodes.get(result.chatId);
-      if (pending && bot) {
+      const pending = authWeb._pendingCodes.get(`${result.platform}:${result.chatId}`);
+      const adapter = adapters[result.platform];
+      if (pending && adapter) {
         try {
-          await bot.sendMessage(result.chatId, `🔐 Dashboard 登入驗證碼：${pending.code}\n\n5 分鐘內有效，請勿分享。`);
+          await adapter.sendText(result.chatId,
+            `🔐 Dashboard 登入驗證碼：${pending.code}\n\n5 分鐘內有效，請勿分享。`);
         } catch (err) {
+          console.error('[api-routes] 驗證碼發送失敗:', err.message);
           return sendJSON(res, 500, { success: false, error: '驗證碼發送失敗' });
         }
+      } else if (!adapter) {
+        return sendJSON(res, 500, {
+          success: false,
+          error: `${result.platform} 通道未啟用，無法發送驗證碼`,
+        });
       }
       return sendJSON(res, 200, { success: true, displayName: result.displayName });
     }
@@ -59,15 +69,11 @@ async function handleRequest(req, res, bot) {
     const body = await readBody(req);
     const { identifier, code } = JSON.parse(body || '{}');
 
-    const users = await auth.listUsers();
-    const target = String(identifier).toLowerCase().replace('@', '');
-    const user = users.find(u =>
-      String(u.chatId) === String(identifier)
-      || (u.profile?.username || '').toLowerCase() === target
-    );
+    const user = await authWeb.findUser(identifier);
     if (!user) return sendJSON(res, 400, { success: false, error: '找不到用戶' });
 
-    const result = authWeb.verifyCode(user.chatId, code);
+    const platform = user.platform || 'telegram';
+    const result = authWeb.verifyCode(platform, user.chatId, code);
     return sendJSON(res, result.success ? 200 : 400, result);
   }
 
@@ -229,17 +235,20 @@ async function handleRequest(req, res, bot) {
     return sendJSON(res, 200, { users });
   }
 
-  // PUT /api/users/:chatId — 修改角色/狀態
-  if (pathname.match(/^\/api\/users\/\d+$/) && req.method === 'PUT') {
+  // PUT /api/users/:chatId — 修改角色/狀態（chatId 為 String 以支援 Discord 19 位 snowflake）
+  if (pathname.match(/^\/api\/users\/[^/]+$/) && req.method === 'PUT') {
     if (session.role !== 'admin') return sendJSON(res, 403, { error: 'Forbidden' });
-    const targetChatId = Number(pathname.split('/')[3]);
+    const targetChatId = decodeURIComponent(pathname.split('/')[3]);
     const body = await readBody(req);
-    const { role, status } = JSON.parse(body || '{}');
+    const { role, status, platform: platformOverride } = JSON.parse(body || '{}');
 
-    // TODO Step 12: dashboard 要支援多平台時改傳 user 來源 platform
-    if (role) await auth.setUserRole('telegram', targetChatId, role);
-    if (status === 'blocked') await auth.approveUser('telegram', targetChatId, 'block');
-    if (status === 'active') await auth.approveUser('telegram', targetChatId, 'approve', role || 'user', session.userId);
+    // 從 DB 找出 user.platform；沒指定也沒查到就 fallback telegram
+    const targetUser = await db.collection('users').findOne({ chatId: String(targetChatId) });
+    const platform = platformOverride || targetUser?.platform || 'telegram';
+
+    if (role) await auth.setUserRole(platform, targetChatId, role);
+    if (status === 'blocked') await auth.approveUser(platform, targetChatId, 'block');
+    if (status === 'active') await auth.approveUser(platform, targetChatId, 'approve', role || 'user', session.userId);
 
     return sendJSON(res, 200, { success: true });
   }
