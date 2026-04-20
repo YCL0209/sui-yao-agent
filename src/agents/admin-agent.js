@@ -12,32 +12,33 @@
 
 const ism = require('../interactive-session');
 const agentRegistry = require('../agent-registry');
+const config = require('../config');
 
 const MESSAGES = {
-  newUserNotify: (profile, chatId) => {
+  // I2 v3：純文字通知 + Dashboard 連結（無按鈕）
+  newUserNotifyWithDashboard: (user, dashboardUrl) => {
+    const profile = user.profile || {};
     const name = [profile.firstName, profile.lastName].filter(Boolean).join(' ') || '未知';
     const username = profile.username ? `@${profile.username}` : '無';
-    return `👤 新用戶申請\n\n姓名：${name}\nUsername：${username}\nChat ID：${chatId}\n\n請選擇操作：`;
+    const platformLabel = user.platform === 'discord' ? 'Discord' : 'Telegram';
+    return `👤 新用戶申請\n\n`
+      + `姓名：${name}\n`
+      + `Username：${username}\n`
+      + `平台：${platformLabel}\n`
+      + `Chat ID：${user.chatId}\n\n`
+      + `請登入 Dashboard 處理：\n${dashboardUrl}/#users`;
   },
   approved: (name, role) => `✅ 已核准「${name}」為 ${role}`,
   blocked: (name) => `🚫 已封鎖「${name}」`,
   pendingReply: '⏳ 您的帳號正在審核中，請稍候。',
   welcomeAfterApproval: '✅ 您的帳號已通過審核！現在可以開始使用穗鈅助手了。',
+  // I2 v3：Discord 用戶專用歡迎詞（channel 尚未建好）
+  welcomeAfterApprovalDiscord:
+    '✅ 您的帳號已通過審核！\n\n'
+    + '管理員正在為您建立專屬操作 channel，請稍候。\n'
+    + '建好後會再通知您。\n\n'
+    + '您也可以直接在這裡（DM）跟我對話，處理日常工作。',
 };
-
-function approvalButtons(chatId) {
-  return {
-    inline_keyboard: [
-      [
-        { text: '✅ 核准（一般）', callback_data: `admin:approve:${chatId}:user` },
-        { text: '✅ 核准（高級）', callback_data: `admin:approve:${chatId}:advanced` },
-      ],
-      [
-        { text: '🚫 封鎖', callback_data: `admin:block:${chatId}` },
-      ],
-    ],
-  };
-}
 
 // ISM stub handler（目前未使用，預留給未來功能）
 const adminHandler = {
@@ -61,19 +62,16 @@ agentRegistry.register({
 });
 
 /**
- * 發送新用戶審核通知給 admin
- * 由 bot-server 呼叫（不走 ISM 的 startSession，因為是推播給 admin 不是回覆用戶）
+ * 組新用戶審核通知（純文字 + Dashboard 連結，無按鈕）
+ * orchestrator._handleNewUser 呼叫，廣播給 admin
  */
 function getNewUserNotification(user) {
-  const profile = user.profile || {};
   return {
-    text: MESSAGES.newUserNotify(profile, user.chatId),
-    reply_markup: approvalButtons(user.chatId),
+    text: MESSAGES.newUserNotifyWithDashboard(user, config.dashboard.publicUrl),
   };
 }
 
 module.exports = {
   MESSAGES,
   getNewUserNotification,
-  approvalButtons,
 };

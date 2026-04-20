@@ -113,6 +113,7 @@ const config = {
   dashboard: {
     port:          parseInt(process.env.DASHBOARD_PORT)           || 4000,
     host:          process.env.DASHBOARD_HOST                      || '127.0.0.1',
+    publicUrl:     process.env.DASHBOARD_PUBLIC_URL                || 'http://127.0.0.1:4000',
     sessionSecret: process.env.DASHBOARD_SESSION_SECRET            || 'sui-yao-dashboard-' + Date.now(),
     verifyCodeTTL: parseInt(process.env.DASHBOARD_VERIFY_CODE_TTL) || 300000,  // 5 分鐘
   },

@@ -319,7 +319,6 @@ class Orchestrator {
         platform: 'telegram',
         chatId: config.telegram.adminChatId,
         text: notification.text,
-        buttons: inlineKeyboardToButtons(notification.reply_markup),
       });
     } else if (config.discord.adminUserIds?.length > 0) {
       // 只有 Discord admin 時才 fallback（避免兩個平台重複通知）
@@ -327,7 +326,6 @@ class Orchestrator {
         platform: 'discord',
         chatId: config.discord.adminUserIds[0],
         text: notification.text,
-        buttons: inlineKeyboardToButtons(notification.reply_markup),
       });
     }
 

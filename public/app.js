@@ -773,7 +773,10 @@ async function approveUserAction(chatId, platform, role) {
   try {
     await api('PUT', `/api/users/${encodeURIComponent(chatId)}`, { status: 'active', role, platform });
     if (platform === 'discord') {
-      alert('✅ 已核准\n\n📋 記得為此 Discord 用戶建立操作 channel\n   參考：docs/discord-add-user-sop.md');
+      alert('✅ 已核准\n\n📋 後續動作：\n'
+        + '  1. 為此 Discord 用戶建立專屬操作 channel\n'
+        + '     參考：docs/discord-add-user-sop.md\n'
+        + '  2. 手動 DM 用戶告知 channel 位置');
     }
     loadUsers();
   } catch (err) {
