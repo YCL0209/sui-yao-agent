@@ -12,6 +12,11 @@ const path = require('path');
 // 載入 .env
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
+// 把逗號分隔字串拆成陣列（過濾空白）
+function parseList(str) {
+  return (str || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+
 // ============================================================
 // 設定定義（巢狀結構）
 // ============================================================
@@ -29,10 +34,23 @@ const config = {
     name: process.env.COMPANY_NAME || '穗鈅科技股份有限公司',
   },
 
-  // Telegram
+  // Telegram（I1：可選，預設啟用以保持向下相容）
   telegram: {
+    enabled:     process.env.TELEGRAM_ENABLED !== 'false',
     botToken:    process.env.TELEGRAM_BOT_TOKEN,
     adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID,
+  },
+
+  // Discord（I1：第二通道）
+  discord: {
+    enabled:           process.env.DISCORD_ENABLED === 'true',
+    token:             process.env.DISCORD_TOKEN,
+    allowedGuildIds:   parseList(process.env.DISCORD_ALLOWED_GUILDS),
+    allowedChannelIds: parseList(process.env.DISCORD_ALLOWED_CHANNELS),
+    allowedUserIds:    parseList(process.env.DISCORD_ALLOWED_USERS),
+    adminUserIds:      parseList(process.env.DISCORD_ADMIN_USERS),
+    triggerMode:       process.env.DISCORD_TRIGGER_MODE || 'both',  // mention | channel | both
+    maxMessageLength:  parseInt(process.env.DISCORD_MAX_MESSAGE_LEN) || 1900,
   },
 
   // LINE（Phase 4）
@@ -194,9 +212,8 @@ const config = {
 // ============================================================
 
 const REQUIRED = [
-  { key: 'telegram.botToken', value: config.telegram.botToken },
-  { key: 'llm.openaiApiKey',  value: config.llm.openaiApiKey },
-  { key: 'mongo.uri',         value: config.mongo.uri },
+  { key: 'llm.openaiApiKey', value: config.llm.openaiApiKey },
+  { key: 'mongo.uri',        value: config.mongo.uri },
 ];
 
 const missing = REQUIRED.filter(r => !r.value);
@@ -204,6 +221,16 @@ if (missing.length > 0) {
   console.error('❌ 缺少必要環境變數：');
   missing.forEach(r => console.error(`   - ${r.key}`));
   console.error('\n請檢查 .env 檔案，參考 .env.example');
+  process.exit(1);
+}
+
+// 至少啟用一個通道
+const telegramReady = config.telegram.enabled && config.telegram.botToken;
+const discordReady  = config.discord.enabled  && config.discord.token;
+if (!telegramReady && !discordReady) {
+  console.error('❌ 必須至少啟用一個通道：');
+  console.error('   - Telegram: TELEGRAM_ENABLED=true 且 TELEGRAM_BOT_TOKEN 已設定');
+  console.error('   - Discord : DISCORD_ENABLED=true 且 DISCORD_TOKEN 已設定');
   process.exit(1);
 }
 
@@ -244,9 +271,12 @@ config.getBaseURL = function(model) {
  */
 config.printSummary = function() {
   const mask = (val) => val ? val.slice(0, 8) + '...' : '(未設定)';
+  const tgState = config.telegram.enabled ? mask(config.telegram.botToken) : '(停用)';
+  const dcState = config.discord.enabled  ? mask(config.discord.token)     : '(停用)';
   console.log(`\n📋 穗鈅助手 v${config.app.version} 設定摘要`);
   console.log(`   環境：${config.app.nodeEnv}`);
-  console.log(`   Telegram：${mask(config.telegram.botToken)}`);
+  console.log(`   Telegram：${tgState}`);
+  console.log(`   Discord ：${dcState} (mode=${config.discord.triggerMode})`);
   console.log(`   OpenAI：${mask(config.llm.openaiApiKey)}`);
   console.log(`   Chat Provider：${config.llm.chatProvider}`);
   console.log(`   預設模型：${config.llm.defaultModel}`);
