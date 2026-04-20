@@ -23,7 +23,6 @@ const toolExecutor = require('./tool-executor');
 const memoryManager = require('./memory-manager');
 const dailyLog = require('./daily-log');
 const session = require('./session');
-const mongo = require('../lib/mongodb-tools');
 const ism = require('./interactive-session');
 
 // 載入 agents（觸發 ISM/agentRegistry 註冊）
@@ -77,47 +76,14 @@ ism.registerHandler('danger-confirm', {
 });
 
 // ============================================================
-// 對話歷史 — MongoDB 持久化（Step 6 暫保留 Number key；Step 7 改複合 key）
+// 對話歷史 helper
 // ============================================================
+//
+// 持久化函式 (loadHistory / saveHistory / clearHistory) 已搬到 session.js
+// 採 (platform, chatId) 複合 key。本檔暫時把 platform 寫死 'telegram'，
+// Step 9 (telegram-adapter) 後改由 normalizedMsg.platform 帶入。
 
-async function getHistory(chatId) {
-  const db = await mongo.getDb();
-  const doc = await db.collection('conversations').findOne({
-    platform: 'telegram',
-    chatId: String(chatId),
-  });
-  return doc?.messages || [];
-}
-
-async function saveHistory(chatId, userId, messages) {
-  const db = await mongo.getDb();
-  const maxMessages = config.conversation?.maxMessages || 200;
-  const trimmed = messages.length > maxMessages
-    ? messages.slice(-maxMessages)
-    : messages;
-
-  await db.collection('conversations').updateOne(
-    { platform: 'telegram', chatId: String(chatId) },
-    {
-      $set: {
-        platform: 'telegram',
-        userId,
-        messages: trimmed,
-        updatedAt: new Date(),
-      },
-      $setOnInsert: { chatId: String(chatId), createdAt: new Date() },
-    },
-    { upsert: true }
-  );
-}
-
-async function clearHistory(chatId) {
-  const db = await mongo.getDb();
-  await db.collection('conversations').deleteOne({
-    platform: 'telegram',
-    chatId: String(chatId),
-  });
-}
+const PLATFORM = 'telegram';
 
 function stripTs(messages) {
   return messages.map(m => {
@@ -228,7 +194,8 @@ async function handleMessage(userId, userMessage, chatId, permissions = null) {
   const systemPrompt = await promptLoader.loadSystemPrompt(userId, userMessage);
 
   // 2. 從 MongoDB 取得對話歷史
-  const history = await getHistory(chatId);
+  const { messages: historyFromDb } = await session.loadHistory(PLATFORM, chatId);
+  const history = [...historyFromDb];
   history.push({ role: 'user', content: userMessage, ts: new Date() });
 
   // 3. 組 messages（剝 ts 送 LLM）
@@ -325,7 +292,7 @@ async function handleMessage(userId, userMessage, chatId, permissions = null) {
 
     if (hasImages) {
       history.push({ role: 'assistant', content: hasImages.text, ts: new Date() });
-      saveHistory(chatId, userId, history).catch(err =>
+      session.saveHistory(PLATFORM, chatId, userId, history).catch(err =>
         console.error('[orchestrator] 對話歷史儲存失敗:', err.message)
       );
       return { reply: hasImages.text, images: hasImages.localPaths };
@@ -334,7 +301,7 @@ async function handleMessage(userId, userMessage, chatId, permissions = null) {
     if (hasReplyMarkup) {
       const text = hasReplyMarkup.data || hasReplyMarkup.summary || '';
       history.push({ role: 'assistant', content: text, ts: new Date() });
-      saveHistory(chatId, userId, history).catch(err =>
+      session.saveHistory(PLATFORM, chatId, userId, history).catch(err =>
         console.error('[orchestrator] 對話歷史儲存失敗:', err.message)
       );
       return { reply: text, reply_markup: hasReplyMarkup.reply_markup };
@@ -384,9 +351,6 @@ module.exports = {
   handleMessage,
   parseMemoryTags,
   tryRescueToolCall,
-  getHistory,
-  saveHistory,
-  clearHistory,
   stripTs,
   definitions,
 };

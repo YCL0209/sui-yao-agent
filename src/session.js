@@ -12,6 +12,7 @@ const config = require('./config');
 const llm = require('./llm-adapter');
 const memoryManager = require('./memory-manager');
 const dailyLog = require('./daily-log');
+const mongo = require('../lib/mongodb-tools');
 
 // preFlush 防重複鎖
 const flushInProgress = new Set();
@@ -194,6 +195,71 @@ async function trimHistoryWithFlush(messages, userId, llmAdapter) {
 }
 
 // ============================================================
+// 對話歷史持久化（I1：複合 key (platform, chatId)，chatId 一律 String）
+// ============================================================
+
+/**
+ * 載入對話歷史
+ * @param {'telegram'|'discord'} platform
+ * @param {string|number} chatId
+ * @returns {Promise<{ messages: Array, summary: string|null }>}
+ */
+async function loadHistory(platform, chatId) {
+  const db = await mongo.getDb();
+  const doc = await db.collection('conversations').findOne({
+    platform,
+    chatId: String(chatId),
+  });
+  return {
+    messages: doc?.messages || [],
+    summary: doc?.summary || null,
+  };
+}
+
+/**
+ * 寫入對話歷史（upsert）
+ * @param {'telegram'|'discord'} platform
+ * @param {string|number} chatId
+ * @param {string} userId
+ * @param {Array} messages
+ */
+async function saveHistory(platform, chatId, userId, messages) {
+  const db = await mongo.getDb();
+  const maxMessages = config.conversation?.maxMessages || 200;
+  const trimmed = messages.length > maxMessages
+    ? messages.slice(-maxMessages)
+    : messages;
+
+  await db.collection('conversations').updateOne(
+    { platform, chatId: String(chatId) },
+    {
+      $set: {
+        platform,
+        chatId: String(chatId),
+        userId,
+        messages: trimmed,
+        updatedAt: new Date(),
+      },
+      $setOnInsert: { createdAt: new Date() },
+    },
+    { upsert: true }
+  );
+}
+
+/**
+ * 清除對話歷史
+ * @param {'telegram'|'discord'} platform
+ * @param {string|number} chatId
+ */
+async function clearHistory(platform, chatId) {
+  const db = await mongo.getDb();
+  await db.collection('conversations').deleteOne({
+    platform,
+    chatId: String(chatId),
+  });
+}
+
+// ============================================================
 // Export
 // ============================================================
 
@@ -202,4 +268,7 @@ module.exports = {
   trimHistory,
   preFlush,
   trimHistoryWithFlush,
+  loadHistory,
+  saveHistory,
+  clearHistory,
 };

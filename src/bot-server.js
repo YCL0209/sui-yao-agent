@@ -28,7 +28,8 @@ const wsManager = require('./dashboard/ws-manager');
 // Orchestrator：Agent loop 與訊息處理核心（Phase I1 抽出）
 // 此 require 同時觸發 danger-confirm ISM handler 註冊與 skill definitions 載入
 const orchestrator = require('./orchestrator');
-const { handleMessage, clearHistory } = orchestrator;
+const { handleMessage } = orchestrator;
+const session = require('./session');
 
 // ============================================================
 // 啟動
@@ -328,7 +329,7 @@ function startBot() {
 
     // reset 指令（同時清除建單 session）
     if (text === '/reset' || text === '/new') {
-      clearHistory(chatId).catch(err =>
+      session.clearHistory('telegram', chatId).catch(err =>
         console.error('[bot-server] 清除對話歷史失敗:', err.message)
       );
       ism.deleteSession(chatId);
