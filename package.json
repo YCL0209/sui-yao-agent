@@ -8,6 +8,7 @@
     "start": "node src/bot-server.js"
   },
   "dependencies": {
+    "discord.js": "^14.26.3",
     "dotenv": "^16.4.7",
     "mongodb": "^6.12.0",
     "node-telegram-bot-api": "^0.67.0",
