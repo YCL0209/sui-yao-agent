@@ -14,428 +14,28 @@
 
 const TelegramBot = require('node-telegram-bot-api');
 const config = require('./config');
-const llm = require('./llm-adapter');
-const promptLoader = require('./prompt-loader');
-const { loadAllSkills } = require('./skill-loader');
 const toolExecutor = require('./tool-executor');
-const memoryManager = require('./memory-manager');
-const dailyLog = require('./daily-log');
-const session = require('./session');
-const mongo = require('../lib/mongodb-tools');
 const createOrderSkill = require('../skills/create-order');
 const ism = require('./interactive-session');
-const orderAgent = require('./agents/order-agent');       // 觸發 ISM/agentRegistry 註冊
-const docAgent = require('./agents/doc-agent');           // 觸發 ISM/agentRegistry 註冊
-const reminderAgent = require('./agents/reminder-agent'); // 觸發 ISM/agentRegistry 註冊
-const adminAgent = require('./agents/admin-agent');       // 觸發 ISM/agentRegistry 註冊
-
-// 高風險操作確認 ISM handler
-ism.registerHandler('danger-confirm', {
-  ttl: 2 * 60 * 1000, // 2 分鐘
-
-  async onStart({ session }) {
-    return { text: '' }; // 已經在 agent loop 回覆了
-  },
-
-  async onCallback(session, action) {
-    if (action === 'cancel') {
-      return { text: '❌ 已取消操作。', done: true };
-    }
-
-    if (action === 'execute') {
-      const { skill, args } = session.data;
-      try {
-        const result = await toolExecutor.execute(
-          { function: { name: skill, arguments: JSON.stringify(args) } },
-          { userId: session.userId, chatId: session.chatId, _skipHighRisk: true }
-        );
-        return {
-          text: result.summary || '✅ 操作已執行。',
-          done: true,
-        };
-      } catch (err) {
-        return { text: `執行失敗：${err.message}`, done: true };
-      }
-    }
-
-    return { text: '', done: true };
-  },
-
-  async onTimeout(session) {
-    console.log(`[danger-confirm] 確認超時: chat=${session.chatId}`);
-  },
-});
+const orderAgent = require('./agents/order-agent');
+const docAgent = require('./agents/doc-agent');
+const reminderAgent = require('./agents/reminder-agent');
+const adminAgent = require('./agents/admin-agent');
 const auth = require('./auth');
 const dashboard = require('./dashboard/server');
 const wsManager = require('./dashboard/ws-manager');
+
+// Orchestrator：Agent loop 與訊息處理核心（Phase I1 抽出）
+// 此 require 同時觸發 danger-confirm ISM handler 註冊與 skill definitions 載入
+const orchestrator = require('./orchestrator');
+const { handleMessage, clearHistory } = orchestrator;
 
 // ============================================================
 // 啟動
 // ============================================================
 
-// 載入 skill definitions（給 LLM function calling 用）
-const { definitions } = loadAllSkills();
-console.log(`[bot-server] 載入 ${definitions.length} 個 skill definitions`);
-
 // Concurrency 控制：per-chatId Promise chain，同一用戶訊息序列化處理
 const chatLocks = new Map();
-
-// ============================================================
-// 對話歷史 — MongoDB 持久化
-// ============================================================
-
-/**
- * 從 MongoDB 取得對話歷史
- * @param {number|string} chatId
- * @returns {Promise<Array>} messages 陣列
- */
-async function getHistory(chatId) {
-  const db = await mongo.getDb();
-  const doc = await db.collection('conversations').findOne({ chatId: Number(chatId) });
-  return doc?.messages || [];
-}
-
-/**
- * 儲存對話歷史到 MongoDB
- * @param {number|string} chatId
- * @param {string} userId
- * @param {Array} messages — 完整的 messages 陣列
- */
-async function saveHistory(chatId, userId, messages) {
-  const db = await mongo.getDb();
-  const maxMessages = config.conversation?.maxMessages || 200;
-  const trimmed = messages.length > maxMessages
-    ? messages.slice(-maxMessages)
-    : messages;
-
-  await db.collection('conversations').updateOne(
-    { chatId: Number(chatId) },
-    {
-      $set: {
-        userId,
-        messages: trimmed,
-        updatedAt: new Date(),
-      },
-      $setOnInsert: { chatId: Number(chatId) },
-    },
-    { upsert: true }
-  );
-}
-
-/**
- * 清除對話歷史
- * @param {number|string} chatId
- */
-async function clearHistory(chatId) {
-  const db = await mongo.getDb();
-  await db.collection('conversations').deleteOne({ chatId: Number(chatId) });
-}
-
-/**
- * 從 messages 陣列剝掉 ts 欄位（送 LLM 用，OpenAI 不需要 ts）
- * @param {Array} messages
- * @returns {Array}
- */
-function stripTs(messages) {
-  return messages.map(m => {
-    const { ts, ...rest } = m;
-    return rest;
-  });
-}
-
-// ============================================================
-// [記憶] / [日誌] 標記解析
-// ============================================================
-
-/**
- * 解析回覆中的 [記憶] 和 [日誌] 標記
- *
- * @param {string} text - LLM 回覆文字
- * @returns {{ reply: string, memories: string[], logs: string[] }}
- */
-/**
- * 解析回覆中的 [記憶] 和 [日誌] 標記
- * 支援 [記憶:高] [記憶] [記憶:低] 三級重要性
- *
- * @param {string} text - LLM 回覆文字
- * @returns {{ reply: string, memories: Array<{content, importance}>, logs: string[] }}
- */
-function parseMemoryTags(text) {
-  if (!text) return { reply: '', memories: [], logs: [] };
-
-  const memories = [];
-  const logs = [];
-
-  // 匹配 [記憶]、[記憶:高]、[記憶:低]
-  const memoryMatches = text.match(/^\[記憶(?::([高低]))?\]\s+(.+)$/gm) || [];
-  for (const m of memoryMatches) {
-    const parsed = m.match(/^\[記憶(?::([高低]))?\]\s+(.+)$/);
-    if (parsed) {
-      const level = parsed[1]; // '高' | '低' | undefined
-      const content = parsed[2].trim();
-      let importance;
-      if (level === '高') importance = 0.9;
-      else if (level === '低') importance = 0.3;
-      else importance = 0.6; // 沒標等級，預設 0.6
-      if (content) memories.push({ content, importance });
-    }
-  }
-
-  const logMatches = text.match(/^\[日誌\]\s+(.+)$/gm) || [];
-  for (const l of logMatches) {
-    const content = l.replace(/^\[日誌\]\s+/, '').trim();
-    if (content) logs.push(content);
-  }
-
-  // 移除行首的標記行（包含新格式）
-  const reply = text
-    .replace(/^\[記憶(?::(?:高|低))?\]\s+.+$/gm, '')
-    .replace(/^\[日誌\]\s+.+$/gm, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-
-  return { reply, memories, logs };
-}
-
-// ============================================================
-// Tool Call 容錯：本地模型可能把 tool call 混進文字內容
-// ============================================================
-
-/**
- * 嘗試從 LLM 的文字回覆中解析出 tool call
- * 某些本地模型（如 qwen2.5:7b）偶爾會把 tool call JSON 寫在 content 裡
- * 而不是走正式的 tool_calls 欄位
- *
- * @param {string} content - LLM 回覆的文字內容
- * @returns {Object|null} 標準化的 toolCall 物件，或 null
- */
-function tryRescueToolCall(content) {
-  if (!content) return null;
-
-  try {
-    // 模式 1：文字中包含 {"name": "xxx", "arguments": {...}}
-    const jsonMatch = content.match(/\{\s*"name"\s*:\s*"([\w-]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}/);
-    if (jsonMatch) {
-      const name = jsonMatch[1];
-      const args = jsonMatch[2];
-      const knownSkills = ['set-reminder', 'create-order', 'check-email', 'generate-pdf', 'print-label', 'system-router'];
-      if (knownSkills.includes(name)) {
-        JSON.parse(args); // 驗證 JSON 合法
-        return {
-          id: `rescued_${Date.now()}`,
-          type: 'function',
-          function: { name, arguments: args },
-        };
-      }
-    }
-
-    // 模式 2：被 <tool_call> 或 </tool_call> 標籤包裹
-    const tagMatch = content.match(/"name"\s*:\s*"([\w-]+)"[\s\S]*?"arguments"\s*:\s*(\{[^}]*\})/);
-    if (tagMatch) {
-      const name = tagMatch[1];
-      const args = tagMatch[2];
-      const knownSkills = ['set-reminder', 'create-order', 'check-email', 'generate-pdf', 'print-label', 'system-router'];
-      if (knownSkills.includes(name)) {
-        JSON.parse(args);
-        return {
-          id: `rescued_${Date.now()}`,
-          type: 'function',
-          function: { name, arguments: args },
-        };
-      }
-    }
-  } catch (err) {
-    console.warn('[bot-server] tryRescueToolCall 解析失敗:', err.message);
-  }
-
-  return null;
-}
-
-// ============================================================
-// Agent 迴圈
-// ============================================================
-
-/**
- * 處理單次訊息的完整 Agent 迴圈
- *
- * @param {string} userId - 用戶 ID
- * @param {string} userMessage - 用戶訊息
- * @param {string} chatId - Telegram chat ID
- * @returns {Promise<{ reply: string, reply_markup?: Object }>} 最終回覆
- */
-async function handleMessage(userId, userMessage, chatId, permissions = null) {
-  // 1. 組裝 system prompt
-  const systemPrompt = await promptLoader.loadSystemPrompt(userId, userMessage);
-
-  // 2. 從 MongoDB 取得對話歷史
-  const history = await getHistory(chatId);
-
-  // 加入用戶訊息（含 ts，DB 保留；送 LLM 時會剝掉）
-  history.push({ role: 'user', content: userMessage, ts: new Date() });
-
-  // 3. 組裝 messages（剝掉 ts，乾淨送 LLM）
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    ...stripTs(history),
-  ];
-
-  // 4. 智慧截斷（帶 pre-flush）
-  const trimmedMessages = await session.trimHistoryWithFlush(messages, userId);
-
-  // 5. Agent 迴圈
-  const maxLoop = config.agent.maxLoop;
-  let currentMessages = [...trimmedMessages];
-  let finalReply = '';
-
-  for (let loop = 0; loop < maxLoop; loop++) {
-    const response = await llm.chat({
-      messages: currentMessages,
-      tools: definitions.length > 0 ? definitions : undefined,
-    });
-
-    // 一般回覆（無 tool_call）→ 嘗試從文字內容中救回 tool call
-    if (!response.tool_calls || response.tool_calls.length === 0) {
-      const rescued = tryRescueToolCall(response.content);
-      if (rescued) {
-        console.log(`[bot-server] 從文字內容中救回 tool_call: ${rescued.function.name}`);
-        response.tool_calls = [rescued];
-      } else {
-        finalReply = response.content || '';
-        break;
-      }
-    }
-
-    // 有 tool_call → 執行
-    // 先把 assistant 的 tool_calls 回覆加入 messages
-    currentMessages.push({
-      role: 'assistant',
-      content: response.content || null,
-      tool_calls: response.tool_calls,
-    });
-
-    let hasReplyMarkup = null;
-    let hasImages = null;
-
-    for (const toolCall of response.tool_calls) {
-      const funcName = toolCall.function?.name || 'unknown';
-      console.log(`[bot-server] Agent loop ${loop + 1}: 執行 ${funcName}`);
-
-      const result = await toolExecutor.execute(toolCall, { userId, chatId, permissions });
-
-      // 高風險操作需要確認 → 啟動 ISM session，直接回傳按鈕
-      if (result._requireConfirmation) {
-        const confirmData = result._confirmData;
-        const confirmResult = await ism.startSession('danger-confirm', {
-          chatId,
-          userId,
-          initialData: {
-            skill: confirmData.skill,
-            args: confirmData.args,
-            description: confirmData.description,
-          },
-        });
-        return {
-          reply: `⚠️ 高風險操作確認\n\n操作：${confirmData.description}\n\n確定要執行嗎？`,
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: '✅ 確定執行', callback_data: 'danger-confirm:execute' },
-                { text: '❌ 取消', callback_data: 'danger-confirm:cancel' },
-              ],
-            ],
-          },
-        };
-      }
-
-      // 如果 tool 結果含 reply_markup（互動式按鈕），直接回傳給用戶
-      if (result.data && typeof result.data === 'object' && result.data.reply_markup) {
-        hasReplyMarkup = result.data;
-      } else if (result.reply_markup) {
-        hasReplyMarkup = result;
-      }
-
-      // 如果 tool 結果含 localPaths（圖片），記錄下來
-      if (result.localPaths && result.localPaths.length > 0) {
-        hasImages = { localPaths: result.localPaths, text: result.data || result.summary };
-      }
-
-      // 把 tool 結果塞回 messages（OpenAI 標準格式）
-      currentMessages.push({
-        role: 'tool',
-        tool_call_id: toolCall.id,
-        content: JSON.stringify({
-          success: result.success,
-          summary: result.summary,
-          data: typeof result.data === 'string' ? result.data : result.summary,
-        }),
-      });
-    }
-
-    // 含圖片的結果直接回傳，不再經過 LLM
-    if (hasImages) {
-      history.push({ role: 'assistant', content: hasImages.text, ts: new Date() });
-      saveHistory(chatId, userId, history).catch(err =>
-        console.error('[bot-server] 對話歷史儲存失敗:', err.message)
-      );
-      return { reply: hasImages.text, images: hasImages.localPaths };
-    }
-
-    // 含 reply_markup 的結果直接回傳，不再經過 LLM
-    if (hasReplyMarkup) {
-      const text = hasReplyMarkup.data || hasReplyMarkup.summary || '';
-      history.push({ role: 'assistant', content: text, ts: new Date() });
-      saveHistory(chatId, userId, history).catch(err =>
-        console.error('[bot-server] 對話歷史儲存失敗:', err.message)
-      );
-      return { reply: text, reply_markup: hasReplyMarkup.reply_markup };
-    }
-
-    // 如果到達最後一輪，強制取得回覆
-    if (loop === maxLoop - 1) {
-      console.warn(`[bot-server] Agent 迴圈達到上限 (${maxLoop})，強制結束`);
-      const finalResponse = await llm.chat({
-        messages: currentMessages,
-      });
-      finalReply = finalResponse.content || '（處理完成，但無法生成回覆）';
-    }
-  }
-
-  // 6. 解析 [記憶] / [日誌] 標記
-  const { reply, memories, logs } = parseMemoryTags(finalReply);
-
-  // 存入記憶和日誌（fire-and-forget，不阻塞回覆）
-  if (memories.length > 0 || logs.length > 0) {
-    Promise.all([
-      ...memories.map(mem =>
-        memoryManager.saveMemory(userId, mem.content, 'LLM 回覆', { importance: mem.importance })
-          .catch(err => console.error('[bot-server] 記憶存入失敗:', err.message))
-      ),
-      ...logs.map(log =>
-        dailyLog.appendLog(userId, { type: 'note', content: log })
-          .catch(err => console.error('[bot-server] 日誌存入失敗:', err.message))
-      ),
-    ]).catch(() => {});
-  }
-
-  // 7. 更新對話歷史
-  history.push({ role: 'assistant', content: finalReply, ts: new Date() });
-
-  // 限制歷史長度（記憶體層級截斷；DB 端 saveHistory 也會用 maxMessages 截）
-  while (history.length > config.session.maxRounds * 2) {
-    history.shift();
-  }
-
-  // 寫回 DB（fire-and-forget，不阻塞回覆）
-  saveHistory(chatId, userId, history).catch(err =>
-    console.error('[bot-server] 對話歷史儲存失敗:', err.message)
-  );
-
-  // reply 為空字串但有記憶/日誌被存入時，回覆確認訊息
-  if (!reply && (memories.length > 0 || logs.length > 0)) {
-    return { reply: '已記住。' };
-  }
-  return { reply: reply ?? finalReply };
-}
 
 // ============================================================
 // 錯誤通知
@@ -501,6 +101,9 @@ function startBot() {
   );
 
   const bot = new TelegramBot(config.telegram.botToken, { polling: true });
+
+  // dashboard 啟動時要顯示 skill 數量
+  const definitions = orchestrator.definitions;
 
   // ---- callback_query handler（Inline keyboard 按鈕） ----
   bot.on('callback_query', async (query) => {
@@ -990,7 +593,7 @@ if (require.main === module) {
 // ============================================================
 
 module.exports = {
-  parseMemoryTags,
+  parseMemoryTags: orchestrator.parseMemoryTags,
   handleMessage,
   startBot,
 };
