@@ -15,6 +15,7 @@
 const config = require('./config');
 const orchestrator = require('./orchestrator');
 const TelegramAdapter = require('./adapters/telegram-adapter');
+const DiscordAdapter = require('./adapters/discord-adapter');
 const dashboard = require('./dashboard/server');
 const wsManager = require('./dashboard/ws-manager');
 const toolExecutor = require('./tool-executor');
@@ -33,7 +34,9 @@ async function main() {
   if (config.telegram.enabled && config.telegram.botToken) {
     adapters.telegram = new TelegramAdapter({ config, orchestrator });
   }
-  // Step 10 會加入 Discord adapter
+  if (config.discord.enabled && config.discord.token) {
+    adapters.discord = new DiscordAdapter({ config, orchestrator });
+  }
 
   if (Object.keys(adapters).length === 0) {
     console.error('❌ 沒有任何通道啟用（Telegram / Discord 都沒設定）');
