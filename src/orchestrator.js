@@ -279,6 +279,7 @@ class Orchestrator {
         return {
           text: combinedText,
           buttons: orderNormalized?.buttons || normalized?.buttons,
+          selectMenu: orderNormalized?.selectMenu || normalized?.selectMenu,
           images: orderNormalized?.images || normalized?.images,
         };
       }
@@ -362,6 +363,7 @@ class Orchestrator {
         return {
           text: [docNormalized?.text, orderNormalized?.text].filter(Boolean).join('\n\n'),
           buttons: orderNormalized?.buttons,
+          selectMenu: orderNormalized?.selectMenu,
           images: orderNormalized?.images,
         };
       }
