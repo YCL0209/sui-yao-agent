@@ -98,15 +98,11 @@ function itemSelectMenu(items, selectedIdx) {
 }
 
 // 品項編輯中的按鈕列（已選品項）
-// platform='discord' 會多一顆「✏️ 輸入」彈 Modal 直接填數量（Discord 專用元件）
+// Discord：Modal 直接輸入新數量；Telegram：沒 Modal，用文字指令改數量（「品名 改 N」「全部 N」）
 function itemActionButtons(idx, item, platform) {
-  const qty = item.quantity || 1;
-  const mainRow = [
-    { text: `− 1 (${qty} → ${Math.max(qty - 1, 0)})`, callback_data: `order:qty:dec:${idx}` },
-    { text: `+ 1 (${qty} → ${qty + 1})`, callback_data: `order:qty:inc:${idx}` },
-  ];
+  const mainRow = [];
   if (platform === 'discord') {
-    mainRow.push({ text: '✏️ 輸入', callback_data: `order:qty:modal:${idx}` });
+    mainRow.push({ text: '✏️ 改數量', callback_data: `order:qty:modal:${idx}` });
   }
   mainRow.push({ text: '🗑 移除', callback_data: `order:qty:del:${idx}` });
 
