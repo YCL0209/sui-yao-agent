@@ -172,26 +172,16 @@ async function enrichItemsWithRAG(items) {
     const enriched = [];
 
     for (const item of items) {
-      const queryCode = (item.productCode || '').trim();
+      // 注意：item.productCode 是 PDF 上的客戶自訂編號，跟我們 ERP 的 productId 無關 → 丟棄
+      //       只用 item.spec（品名規格原文）做 RAG，命中才帶我們 ERP 的 productId
       const querySpec = (item.spec || item.name || '').trim();
       const specKept = item.spec || null;
 
-      // Priority：
-      // (1) 有 productCode 且 PDF 上抽到 → **只**用 productCode 精確比對；查不到就當 ERP 沒此產品，
-      //     保留原 code 讓用戶知道（絕不用 spec 模糊搜撞別的產品，避免誤配到同名代號）
-      // (2) 沒 productCode（如文字建單）→ 才用 spec/name 模糊搜
       let results = [];
-      let usedCodeSearch = false;
-      if (queryCode) {
-        results = await productSearch.searchProduct(queryCode);
-        usedCodeSearch = true;
-      } else if (querySpec) {
+      if (querySpec) {
         results = await productSearch.searchProduct(querySpec);
       }
       const classified = productSearch.classifyResults(results);
-
-      // candidates 只在「無 productCode」情境接受，避免低信心誤配
-      const acceptCandidate = !usedCodeSearch;
 
       if (classified.autoMatch.length > 0) {
         const matched = classified.autoMatch[0].product;
@@ -199,7 +189,7 @@ async function enrichItemsWithRAG(items) {
           name: matched.name,
           originalName: querySpec,
           matchedName: matched.name,
-          productCode: matched.productId,
+          productCode: matched.productId,   // ← 我們 ERP 的 productId
           spec: specKept,
           matchConfidence: classified.autoMatch[0].score,
           quantity: item.quantity || 1,
@@ -210,7 +200,7 @@ async function enrichItemsWithRAG(items) {
         if (querySpec && querySpec !== matched.name) {
           productSearch.learnAlias(matched.productId, querySpec).catch(() => {});
         }
-      } else if (classified.candidates.length > 0 && acceptCandidate) {
+      } else if (classified.candidates.length > 0) {
         const best = classified.candidates[0].product;
         enriched.push({
           name: best.name,
@@ -225,19 +215,18 @@ async function enrichItemsWithRAG(items) {
           _matched: 'candidate',
         });
       } else {
+        // RAG 找不到對應產品 → productCode 留空，送 ERP 時讓 ERP 自動生成新 productId
         enriched.push({
-          name: querySpec || queryCode || '未命名',
+          name: querySpec || '未命名',
           originalName: querySpec,
           matchedName: null,
-          productCode: queryCode || null,
+          productCode: null,
           spec: specKept,
           matchConfidence: 0,
           quantity: item.quantity || 1,
           price: item.price || 0,
           unit: '個',
           _matched: false,
-          // ERP 找不到此 productCode（PDF 上有抽到但 ERP 庫沒有）→ 給 UI 顯示警告用
-          _codeNotFoundInErp: !!queryCode,
         });
       }
     }
@@ -298,7 +287,7 @@ async function submitOrder(orderData) {
   const userNote = (orderData.note || '').trim();
   const specLines = (orderData.items || [])
     .filter(i => i.spec)
-    .map(i => `  ${i.productCode || '?'}：${i.spec}`);
+    .map(i => `  • ${i.spec}`);
   const specBlock = specLines.length > 0
     ? `【品項規格原文】\n${specLines.join('\n')}`
     : '';
@@ -311,8 +300,10 @@ async function submitOrder(orderData) {
     customerPhone: orderData.customer.phone || '',
     shippingAddress: orderData.customer.address || '',
     items: orderData.items.map(item => ({
-      productCode: item.productCode || item.originalName || item.name,
-      productName: item.matchedName || item.originalName || item.name,
+      // match 成功 → 我們 ERP 的 productId；未 match → 留空字串，由 ERP 端自動生成
+      productCode: item.productCode || '',
+      // productName 優先序：ERP 標準名 → PDF 規格原文 → fallback
+      productName: item.matchedName || item.spec || item.originalName || item.name || '',
       quantity: item.quantity,
       unitPrice: item.price || 0,
       unit: item.unit || '個',

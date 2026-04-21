@@ -215,23 +215,18 @@ function formatOrderSummary(sess) {
 
   const itemLines = (data.items || []).map((i, idx) => {
     const num = `${idx + 1}.`;
+    // productCode 在 match 成功時才有值（= 我們 ERP 的 productId）；未 match 就不顯示方括號
     const code = i.productCode ? `[${i.productCode}] ` : '';
     const unit = i.unit || '個';
     const priceStr = i.price > 0 ? ` @NT$${i.price}/${unit}` : ' (價格未填)';
     const totalStr = i.price > 0 ? ` = NT$${i.quantity * i.price}` : '';
-    // displayName 優先順序：matchedName（ERP 標準）> spec（PDF 原文）> name > '未命名'
-    //   避免 matchedName 跟 spec 都空時退回 name = productCode 變成 "[PRO-236] PRO-236"
+    // displayName 優先：matchedName（ERP 標準）→ spec（PDF 原文）→ name → '未命名'
     const displayName = i.matchedName || i.spec || i.name || i.originalName || '未命名';
 
     let line = `  ${num} ${code}${displayName} ×${i.quantity}${priceStr}${totalStr}`;
 
-    // 警告層級由強到弱：
-    // (1) ERP 查不到 productCode（PDF 抽到 code 但庫裡沒）→ 最優先警告
-    // (2) PDF 原文規格跟顯示名不同 → 小字顯示供口核
-    // (3) 舊路徑 matchedName vs originalName 不符
-    if (i._codeNotFoundInErp) {
-      line += `\n     ⚠️ ERP 找不到此產品編號，建議先確認或到 ERP 建立`;
-      // 同時顯示規格原文，讓 admin 清楚是什麼商品
+    if (i._matched === false) {
+      line += `\n     ⚠️ ERP 無對應產品（送出後 ERP 會自動生成產品編號）`;
       if (i.spec && i.spec !== displayName) {
         line += `\n     📍 規格：${i.spec}`;
       }
