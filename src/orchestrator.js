@@ -148,6 +148,10 @@ function normalizeAgentResult(result) {
   const out = { text: result.text || '' };
   const buttons = inlineKeyboardToButtons(result.reply_markup);
   if (buttons) out.buttons = buttons;
+  // select_menu（Discord 專用；Telegram adapter 忽略此欄位）
+  if (result.reply_markup?.select_menu) {
+    out.selectMenu = result.reply_markup.select_menu;
+  }
   if (Array.isArray(result.images) && result.images.length > 0) {
     out.images = result.images.map(img => ({
       localPath: img.localPath || img,

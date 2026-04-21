@@ -9,6 +9,7 @@
 const {
   Client, GatewayIntentBits, Events, Partials,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder,
+  StringSelectMenuBuilder,
 } = require('discord.js');
 const MessageAdapter = require('./adapter-interface');
 const { normalizeDiscordInput } = require('../input-normalizer');
@@ -64,6 +65,7 @@ class DiscordAdapter extends MessageAdapter {
         if (response?.text) {
           await this.sendText(normalized.chatId, response.text, {
             buttons: response.buttons,
+            selectMenu: response.selectMenu,
             replyToId: normalized.messageId,
           });
         }
@@ -76,17 +78,23 @@ class DiscordAdapter extends MessageAdapter {
     });
 
     this.client.on(Events.InteractionCreate, async (interaction) => {
-      if (!interaction.isButton()) return;
+      if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
 
       try {
         const chatId = interaction.channelId;
         const userId = `discord:${chatId}`;
 
+        // Button: customId 直接當 callback id
+        // SelectMenu: customId + 選中的 value 組成 callback id（例：order:item:sel + 0 → order:item:sel:0）
+        const callbackId = interaction.isStringSelectMenu()
+          ? `${interaction.customId}:${interaction.values[0]}`
+          : interaction.customId;
+
         const response = await this.orchestrator.handleCallback(
           this.platform,
           chatId,
           userId,
-          interaction.customId,
+          callbackId,
           interaction.message.id
         );
 
@@ -101,7 +109,7 @@ class DiscordAdapter extends MessageAdapter {
         if (response) {
           if (response.text) {
             // 用 followUp 發新訊息（避免 double reply）
-            const components = response.buttons ? this._buttonsToComponents(response.buttons) : [];
+            const components = this._buildComponents(response.buttons, response.selectMenu);
             const chunks = this._splitMessage(response.text, this.maxLen);
             for (let i = 0; i < chunks.length; i++) {
               const payload = { content: chunks[i] };
@@ -167,7 +175,7 @@ class DiscordAdapter extends MessageAdapter {
       return;
     }
     const chunks = this._splitMessage(text, this.maxLen);
-    const components = options.buttons ? this._buttonsToComponents(options.buttons) : [];
+    const components = this._buildComponents(options.buttons, options.selectMenu);
 
     for (let i = 0; i < chunks.length; i++) {
       const payload = { content: chunks[i] };
@@ -248,8 +256,39 @@ class DiscordAdapter extends MessageAdapter {
   }
 
   // ============================================================
-  // Button 轉譯
+  // Button / SelectMenu 轉譯
   // ============================================================
+
+  // 組合 reply_markup → Discord ActionRow[]（SelectMenu 在上、Button 在下；共 5 排上限）
+  _buildComponents(buttons, selectMenu) {
+    const rows = [];
+    if (selectMenu) {
+      rows.push(this._selectMenuToRow(selectMenu));
+    }
+    if (Array.isArray(buttons) && buttons.length > 0) {
+      rows.push(...this._buttonsToComponents(buttons));
+    }
+    return rows.slice(0, 5);
+  }
+
+  _selectMenuToRow(selectMenu) {
+    const ar = new ActionRowBuilder();
+    const options = (selectMenu.options || []).slice(0, 25).map(o => {
+      const opt = {
+        label: (o.label || ' ').slice(0, 100),
+        value: String(o.value).slice(0, 100),
+      };
+      if (o.default) opt.default = true;
+      if (o.description) opt.description = String(o.description).slice(0, 100);
+      return opt;
+    });
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId((selectMenu.custom_id || 'select').slice(0, 100))
+      .setPlaceholder((selectMenu.placeholder || '請選擇').slice(0, 150))
+      .addOptions(options);
+    ar.addComponents(menu);
+    return ar;
+  }
 
   _buttonsToComponents(buttons) {
     // Discord：每排 5 個、每訊息 5 排

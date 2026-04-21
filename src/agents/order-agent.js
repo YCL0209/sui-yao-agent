@@ -59,12 +59,102 @@ function confirmButtons() {
         { text: '✅ 確認建單', callback_data: 'order:confirm' },
         { text: '❌ 取消', callback_data: 'order:cancel' },
       ],
-      [
-        { text: '×2', callback_data: 'order:qty:mul:2' },
-        { text: '×3', callback_data: 'order:qty:mul:3' },
-        { text: '×5', callback_data: 'order:qty:mul:5' },
-      ],
     ],
+  };
+}
+
+function cancelOnlyButtons() {
+  return {
+    inline_keyboard: [
+      [{ text: '❌ 取消', callback_data: 'order:cancel' }],
+    ],
+  };
+}
+
+// 品項下拉選單（Discord 用；Telegram adapter 會忽略此欄位）
+// 最多 25 個選項（Discord 硬上限）；超過的話後面品項就下拉看不到，但文字指令仍可操作
+function itemSelectMenu(items, selectedIdx) {
+  const options = items.slice(0, 25).map((i, idx) => {
+    const code = i.productCode ? `[${i.productCode}] ` : '';
+    const name = i.matchedName || i.originalName || i.name || '未命名';
+    // Discord option label 最多 100 字元
+    const rawLabel = `${idx + 1}. ${code}${name} ×${i.quantity}`;
+    const label = rawLabel.length > 100 ? rawLabel.slice(0, 97) + '…' : rawLabel;
+    return { label, value: String(idx), default: idx === selectedIdx };
+  });
+
+  let placeholder = '選擇品項編輯 ▼';
+  if (selectedIdx !== undefined && items[selectedIdx]) {
+    const item = items[selectedIdx];
+    const name = item.matchedName || item.originalName || item.name || '未命名';
+    placeholder = `已選：${name.slice(0, 60)}`;
+  }
+
+  return {
+    custom_id: 'order:item:sel',
+    placeholder,
+    options,
+  };
+}
+
+// 品項編輯中的按鈕列（已選品項）
+function itemActionButtons(idx, item) {
+  const qty = item.quantity || 1;
+  return [
+    [
+      { text: `− 1 (${qty} → ${Math.max(qty - 1, 0)})`, callback_data: `order:qty:dec:${idx}` },
+      { text: `+ 1 (${qty} → ${qty + 1})`, callback_data: `order:qty:inc:${idx}` },
+      { text: '🗑 移除', callback_data: `order:qty:del:${idx}` },
+    ],
+    [{ text: '↩ 返回品項選擇', callback_data: 'order:item:back' }],
+    [
+      { text: '✅ 確認建單', callback_data: 'order:confirm' },
+      { text: '❌ 取消', callback_data: 'order:cancel' },
+    ],
+  ];
+}
+
+// 統一渲染 confirm 步驟（summary + 對應按鈕 + Discord 下拉）
+// - 無品項 → 提示 + 只給取消
+// - 有 _selectedItemIdx → 已選狀態：[-][+][🗑][↩] 按鈕 + select（標 default）
+// - 未選 → 一般狀態：[確認][取消] 按鈕 + select
+function renderConfirmStep(session) {
+  const items = session.data.items || [];
+
+  if (items.length === 0) {
+    return {
+      text: '⚠️ 訂單已無品項，請取消後重新建單。',
+      reply_markup: cancelOnlyButtons(),
+    };
+  }
+
+  // _selectedItemIdx 可能指向已被刪除的 index，保險檢查
+  let idx = session.data._selectedItemIdx;
+  if (idx !== undefined && !items[idx]) {
+    delete session.data._selectedItemIdx;
+    idx = undefined;
+  }
+
+  const summary = formatOrderSummary(session);
+
+  if (idx !== undefined) {
+    const item = items[idx];
+    const displayName = item.matchedName || item.originalName || item.name || '未命名';
+    return {
+      text: summary + `\n\n✏️ 編輯中：${displayName} ×${item.quantity}`,
+      reply_markup: {
+        inline_keyboard: itemActionButtons(idx, item),
+        select_menu: itemSelectMenu(items, idx),
+      },
+    };
+  }
+
+  return {
+    text: summary,
+    reply_markup: {
+      inline_keyboard: confirmButtons().inline_keyboard,
+      select_menu: itemSelectMenu(items),
+    },
   };
 }
 
@@ -114,16 +204,17 @@ function formatOrderSummary(sess) {
   const customerName = data.customer?.name || '未知';
   const company = data.customer?.company ? `（${data.customer.company}）` : '';
 
-  const itemLines = (data.items || []).map(i => {
+  const itemLines = (data.items || []).map((i, idx) => {
+    const num = `${idx + 1}.`;
     const code = i.productCode ? `[${i.productCode}] ` : '';
     const unit = i.unit || '個';
     const priceStr = i.price > 0 ? ` @NT$${i.price}/${unit}` : ' (價格未填)';
     const totalStr = i.price > 0 ? ` = NT$${i.quantity * i.price}` : '';
     const displayName = i.matchedName || i.originalName || i.name;
     if (i.matchedName && i.originalName && i.originalName !== i.matchedName) {
-      return `  • ${i.originalName} → 比對為 ${code}${i.matchedName} ×${i.quantity}${priceStr}${totalStr}\n    ⚠️ 品名不完全一致，請確認`;
+      return `  ${num} ${i.originalName} → 比對為 ${code}${i.matchedName} ×${i.quantity}${priceStr}${totalStr}\n    ⚠️ 品名不完全一致，請確認`;
     }
-    return `  • ${code}${displayName} ×${i.quantity}${priceStr}${totalStr}`;
+    return `  ${num} ${code}${displayName} ×${i.quantity}${priceStr}${totalStr}`;
   }).join('\n');
 
   const total = (data.items || []).reduce((s, i) => s + i.quantity * (i.price || 0), 0);
@@ -133,7 +224,7 @@ function formatOrderSummary(sess) {
     + `客戶：${customerName}${company}\n`
     + `品項：\n${itemLines}\n`
     + `合計：NT$ ${total.toLocaleString()}${total === 0 ? ' (待補價格)' : ''}\n`
-    + `\n💡 可按倍數鈕或輸入「全部 3」「MADLN02BD 改 5」調整數量`;
+    + `\n💡 Discord：用下拉選品項編輯數量；Telegram：輸入「全部 3」「MADLN02BD 改 5」「×3」調整`;
 }
 
 // ========================================
@@ -259,8 +350,7 @@ const orderHandler = {
       // 如果已有品項（從 PDF 帶入），直接跳確認
       if (session.data.items && session.data.items.length > 0) {
         session.step = 'confirm';
-        const summary = formatOrderSummary(session);
-        return { text: summary, reply_markup: confirmButtons() };
+        return renderConfirmStep(session);
       }
       return { text: MESSAGES.askItems };
     }
@@ -279,10 +369,10 @@ const orderHandler = {
         // 如果已有品項，直接跳確認
         if (session.data.items && session.data.items.length > 0) {
           session.step = 'confirm';
-          const summary = formatOrderSummary(session);
+          const rendered = renderConfirmStep(session);
           return {
-            text: MESSAGES.customerCreated(pendingName) + '\n\n' + summary,
-            reply_markup: confirmButtons(),
+            ...rendered,
+            text: MESSAGES.customerCreated(pendingName) + '\n\n' + rendered.text,
           };
         }
         session.step = 'items';
@@ -299,22 +389,57 @@ const orderHandler = {
       return { text: MESSAGES.askCustomer };
     }
 
-    // qty:mul:N — 整單數量 ×N
+    // item:sel:IDX — Discord 下拉選品項
+    // item:back    — 返回品項選擇
+    if (action === 'item') {
+      const [sub, arg] = (payload || '').split(':');
+      if (sub === 'sel') {
+        const idx = parseInt(arg, 10);
+        if (!Number.isNaN(idx) && session.data.items?.[idx]) {
+          session.data._selectedItemIdx = idx;
+          return renderConfirmStep(session);
+        }
+        return { text: MESSAGES.expired };
+      }
+      if (sub === 'back') {
+        delete session.data._selectedItemIdx;
+        return renderConfirmStep(session);
+      }
+      return { text: MESSAGES.unknownAction };
+    }
+
+    // qty:inc:IDX / qty:dec:IDX / qty:del:IDX — 單品項數量編輯
     if (action === 'qty') {
       const [sub, arg] = (payload || '').split(':');
-      if (sub === 'mul') {
-        const n = parseInt(arg, 10);
-        if (n >= 2 && n <= 99 && session.data.items?.length) {
-          session.data.items = session.data.items.map(it => ({
-            ...it,
-            quantity: (it.quantity || 1) * n,
-          }));
-          return {
-            text: `✅ 已將所有品項數量 ×${n}\n\n` + formatOrderSummary(session),
-            reply_markup: confirmButtons(),
-          };
-        }
+      const idx = parseInt(arg, 10);
+      const items = session.data.items || [];
+      if (Number.isNaN(idx) || !items[idx]) {
+        return { text: MESSAGES.expired };
       }
+
+      if (sub === 'inc') {
+        items[idx].quantity = (items[idx].quantity || 1) + 1;
+        // 保持 _selectedItemIdx 不變，續編同品項
+        return renderConfirmStep(session);
+      }
+
+      if (sub === 'dec') {
+        const newQty = (items[idx].quantity || 1) - 1;
+        if (newQty <= 0) {
+          items.splice(idx, 1);
+          delete session.data._selectedItemIdx;
+        } else {
+          items[idx].quantity = newQty;
+        }
+        return renderConfirmStep(session);
+      }
+
+      if (sub === 'del') {
+        items.splice(idx, 1);
+        delete session.data._selectedItemIdx;
+        return renderConfirmStep(session);
+      }
+
       return { text: MESSAGES.unknownAction };
     }
 
@@ -395,8 +520,8 @@ const orderHandler = {
 
         if (session.data.items && session.data.items.length > 0) {
           session.step = 'confirm';
-          const summary = formatOrderSummary(session);
-          return { text: prefix + '\n\n' + summary, reply_markup: confirmButtons() };
+          const rendered = renderConfirmStep(session);
+          return { ...rendered, text: prefix + '\n\n' + rendered.text };
         }
         return { text: prefix + '\n\n' + MESSAGES.askItems };
       }
@@ -421,10 +546,7 @@ const orderHandler = {
       const enrichedItems = await orderSkill.enrichItemsWithRAG(items);
       session.data.items = enrichedItems;
       session.step = 'confirm';
-      return {
-        text: formatOrderSummary(session),
-        reply_markup: confirmButtons(),
-      };
+      return renderConfirmStep(session);
     }
 
     // confirm 步驟：允許打字調整數量（×3、全部 3、MADLN02BD 改 5 …）
@@ -432,10 +554,9 @@ const orderHandler = {
       const result = applyQtyEdit(trimmed, session.data.items || []);
       if (result.matched) {
         session.data.items = result.items;
-        return {
-          text: result.feedback + '\n\n' + formatOrderSummary(session),
-          reply_markup: confirmButtons(),
-        };
+        delete session.data._selectedItemIdx;  // 文字改完後回到未選狀態
+        const rendered = renderConfirmStep(session);
+        return { ...rendered, text: result.feedback + '\n\n' + rendered.text };
       }
       // 沒 match 就不攔截，讓主流程接手
     }
@@ -474,10 +595,7 @@ async function startFromParsed(session, parsed, context) {
   // 判斷缺什麼，跳到對應步驟
   if (session.data.customer && session.data.items?.length > 0 && session.data.type) {
     session.step = 'confirm';
-    return {
-      text: formatOrderSummary(session),
-      reply_markup: confirmButtons(),
-    };
+    return renderConfirmStep(session);
   }
 
   // 組裝已解析摘要
