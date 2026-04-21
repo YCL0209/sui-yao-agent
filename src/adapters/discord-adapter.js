@@ -10,6 +10,7 @@ const {
   Client, GatewayIntentBits, Events, Partials,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder,
   StringSelectMenuBuilder,
+  ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const MessageAdapter = require('./adapter-interface');
 const { normalizeDiscordInput } = require('../input-normalizer');
@@ -78,17 +79,43 @@ class DiscordAdapter extends MessageAdapter {
     });
 
     this.client.on(Events.InteractionCreate, async (interaction) => {
-      if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
+      if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) return;
 
       try {
         const chatId = interaction.channelId;
         const userId = `discord:${chatId}`;
 
+        // 特殊攔截：order:qty:modal:IDX 按鈕 → 彈 Discord Modal 讓用戶直接輸入數量
+        // （不走 orchestrator；提交後由 isModalSubmit 分支組成 order:qty:set:IDX:N 再呼叫）
+        if (interaction.isButton() && interaction.customId.startsWith('order:qty:modal:')) {
+          const idx = interaction.customId.split(':')[3];
+          const modal = new ModalBuilder()
+            .setCustomId(`order:qty:set:${idx}`)
+            .setTitle('修改品項數量');
+          const qtyInput = new TextInputBuilder()
+            .setCustomId('qty')
+            .setLabel('新數量（輸入 0 或負數會移除此品項）')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(4)
+            .setPlaceholder('例：20');
+          modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
+          await interaction.showModal(modal);
+          return;
+        }
+
         // Button: customId 直接當 callback id
         // SelectMenu: customId + 選中的 value 組成 callback id（例：order:item:sel + 0 → order:item:sel:0）
-        const callbackId = interaction.isStringSelectMenu()
-          ? `${interaction.customId}:${interaction.values[0]}`
-          : interaction.customId;
+        // ModalSubmit: customId + 輸入值組成（例：order:qty:set:0 + 20 → order:qty:set:0:20）
+        let callbackId;
+        if (interaction.isStringSelectMenu()) {
+          callbackId = `${interaction.customId}:${interaction.values[0]}`;
+        } else if (interaction.isModalSubmit()) {
+          const qty = interaction.fields.getTextInputValue('qty');
+          callbackId = `${interaction.customId}:${qty}`;
+        } else {
+          callbackId = interaction.customId;
+        }
 
         const response = await this.orchestrator.handleCallback(
           this.platform,

@@ -98,14 +98,20 @@ function itemSelectMenu(items, selectedIdx) {
 }
 
 // 品項編輯中的按鈕列（已選品項）
-function itemActionButtons(idx, item) {
+// platform='discord' 會多一顆「✏️ 輸入」彈 Modal 直接填數量（Discord 專用元件）
+function itemActionButtons(idx, item, platform) {
   const qty = item.quantity || 1;
+  const mainRow = [
+    { text: `− 1 (${qty} → ${Math.max(qty - 1, 0)})`, callback_data: `order:qty:dec:${idx}` },
+    { text: `+ 1 (${qty} → ${qty + 1})`, callback_data: `order:qty:inc:${idx}` },
+  ];
+  if (platform === 'discord') {
+    mainRow.push({ text: '✏️ 輸入', callback_data: `order:qty:modal:${idx}` });
+  }
+  mainRow.push({ text: '🗑 移除', callback_data: `order:qty:del:${idx}` });
+
   return [
-    [
-      { text: `− 1 (${qty} → ${Math.max(qty - 1, 0)})`, callback_data: `order:qty:dec:${idx}` },
-      { text: `+ 1 (${qty} → ${qty + 1})`, callback_data: `order:qty:inc:${idx}` },
-      { text: '🗑 移除', callback_data: `order:qty:del:${idx}` },
-    ],
+    mainRow,
     [{ text: '↩ 返回品項選擇', callback_data: 'order:item:back' }],
     [
       { text: '✅ 確認建單', callback_data: 'order:confirm' },
@@ -135,6 +141,9 @@ function renderConfirmStep(session) {
     idx = undefined;
   }
 
+  // 從 session.userId（例：'discord:12345'）解出 platform，給 itemActionButtons 決定要不要加 Modal 鈕
+  const platform = (session.userId || '').split(':')[0] || null;
+
   const summary = formatOrderSummary(session);
 
   if (idx !== undefined) {
@@ -143,7 +152,7 @@ function renderConfirmStep(session) {
     return {
       text: summary + `\n\n✏️ 編輯中：${displayName} ×${item.quantity}`,
       reply_markup: {
-        inline_keyboard: itemActionButtons(idx, item),
+        inline_keyboard: itemActionButtons(idx, item, platform),
         select_menu: itemSelectMenu(items, idx),
       },
     };
@@ -455,6 +464,35 @@ const orderHandler = {
         items.splice(idx, 1);
         delete session.data._selectedItemIdx;
         return renderConfirmStep(session);
+      }
+
+      // qty:set:IDX:N — Discord Modal 送出後 adapter 組成此 callback
+      if (sub === 'set') {
+        const parts = (payload || '').split(':');
+        const targetIdx = parseInt(parts[1], 10);
+        const newQty = parseInt(parts[2], 10);
+        if (Number.isNaN(targetIdx) || !items[targetIdx]) {
+          return { text: MESSAGES.expired };
+        }
+        if (Number.isNaN(newQty)) {
+          return { text: '⚠️ 請輸入數字' };
+        }
+        if (newQty > 999) {
+          return { text: '⚠️ 數量上限 999' };
+        }
+        if (newQty <= 0) {
+          items.splice(targetIdx, 1);
+          delete session.data._selectedItemIdx;
+        } else {
+          items[targetIdx].quantity = newQty;
+          session.data._selectedItemIdx = targetIdx;  // 保持已選
+        }
+        return renderConfirmStep(session);
+      }
+
+      // qty:modal:IDX — 備援：若 adapter 沒攔到（例如 Telegram 誤按），回提示
+      if (sub === 'modal') {
+        return { text: '此功能僅 Discord 支援。Telegram 請用文字指令：「全部 N」「品名 改 N」「×N」' };
       }
 
       return { text: MESSAGES.unknownAction };
