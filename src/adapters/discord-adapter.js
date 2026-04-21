@@ -131,7 +131,24 @@ class DiscordAdapter extends MessageAdapter {
     this.client.on(Events.Error, (err) =>
       console.error('[discord-adapter] client error:', err));
 
-    await this.client.login(this.dcConfig.token);
+    // login retry / backoff（連 4 次：立即 + 5s + 15s + 30s）
+    // 處理 Discord gateway 暫時 unreachable 的情境，避免 launchd 無限重啟整個 bot
+    const delays = [5000, 15000, 30000];
+    let lastErr;
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        await this.client.login(this.dcConfig.token);
+        return;
+      } catch (err) {
+        lastErr = err;
+        console.error(`[discord-adapter] login 失敗 (嘗試 ${attempt + 1}/${delays.length + 1}): ${err.message}`);
+        if (attempt < delays.length) {
+          console.log(`[discord-adapter] ${delays[attempt] / 1000}s 後重試...`);
+          await new Promise(r => setTimeout(r, delays[attempt]));
+        }
+      }
+    }
+    throw lastErr;
   }
 
   async stop() {
