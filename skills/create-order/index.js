@@ -172,32 +172,46 @@ async function enrichItemsWithRAG(items) {
     const enriched = [];
 
     for (const item of items) {
-      const results = await productSearch.searchProduct(item.name);
+      const queryCode = (item.productCode || '').trim();
+      // querySpec：PDF schema 新欄位；若沒 spec（來自文字輸入等舊路徑）就 fallback item.name
+      const querySpec = (item.spec || item.name || '').trim();
+      const specKept = item.spec || null;  // 保留 PDF 原文規格供 submitOrder 寫 notes
+
+      // Priority：有 productCode → 先精確比對；落空才用 spec 模糊搜
+      let results = [];
+      if (queryCode) {
+        results = await productSearch.searchProduct(queryCode);
+      }
+      if (results.length === 0 && querySpec) {
+        results = await productSearch.searchProduct(querySpec);
+      }
       const classified = productSearch.classifyResults(results);
 
       if (classified.autoMatch.length > 0) {
         const matched = classified.autoMatch[0].product;
         enriched.push({
-          name: item.name,
-          originalName: item.name,
+          name: matched.name,               // 用 ERP 標準名覆蓋 LLM 可能幻覺的原文
+          originalName: querySpec,
           matchedName: matched.name,
           productCode: matched.productId,
+          spec: specKept,
           matchConfidence: classified.autoMatch[0].score,
           quantity: item.quantity || 1,
           price: item.price || matched.unitPrice || 0,
           unit: matched.unit || '個',
           _matched: true,
         });
-        if (item.name !== matched.name) {
-          productSearch.learnAlias(matched.productId, item.name).catch(() => {});
+        if (querySpec && querySpec !== matched.name) {
+          productSearch.learnAlias(matched.productId, querySpec).catch(() => {});
         }
       } else if (classified.candidates.length > 0) {
         const best = classified.candidates[0].product;
         enriched.push({
-          name: item.name,
-          originalName: item.name,
+          name: best.name,
+          originalName: querySpec,
           matchedName: best.name,
           productCode: best.productId,
+          spec: specKept,
           matchConfidence: classified.candidates[0].score,
           quantity: item.quantity || 1,
           price: item.price || best.unitPrice || 0,
@@ -206,10 +220,11 @@ async function enrichItemsWithRAG(items) {
         });
       } else {
         enriched.push({
-          name: item.name,
-          originalName: item.name,
+          name: querySpec,
+          originalName: querySpec,
           matchedName: null,
-          productCode: null,
+          productCode: queryCode || null,   // LLM 抽到的 code 即使查不到也保留，方便人工追蹤
+          spec: specKept,
           matchConfidence: 0,
           quantity: item.quantity || 1,
           price: item.price || 0,
@@ -269,6 +284,18 @@ async function createCustomerInERP(name) {
  */
 async function submitOrder(orderData) {
   const erpOrderType = orderData.type === 'quotation' ? 'sales' : orderData.type;
+
+  // 整單 notes 組合：用戶原備註 + 每個品項的規格原文
+  // ERP items schema 不支援 per-item 備註，規格只能塞整單 notes 帶到 PDF 底部
+  const userNote = (orderData.note || '').trim();
+  const specLines = (orderData.items || [])
+    .filter(i => i.spec)
+    .map(i => `  ${i.productCode || '?'}：${i.spec}`);
+  const specBlock = specLines.length > 0
+    ? `【品項規格原文】\n${specLines.join('\n')}`
+    : '';
+  const combinedNotes = [userNote, specBlock].filter(Boolean).join('\n\n');
+
   const orderPayload = {
     orderType: erpOrderType,
     customerId: orderData.customer._id,
@@ -290,7 +317,7 @@ async function submitOrder(orderData) {
       isPaid: false,
       paidAmount: 0,
     },
-    notes: orderData.note || '',
+    notes: combinedNotes,
   };
 
   console.log('[Order] 建立訂單:', JSON.stringify(orderPayload, null, 2));

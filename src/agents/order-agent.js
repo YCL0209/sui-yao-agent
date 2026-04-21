@@ -210,11 +210,18 @@ function formatOrderSummary(sess) {
     const unit = i.unit || '個';
     const priceStr = i.price > 0 ? ` @NT$${i.price}/${unit}` : ' (價格未填)';
     const totalStr = i.price > 0 ? ` = NT$${i.quantity * i.price}` : '';
-    const displayName = i.matchedName || i.originalName || i.name;
-    if (i.matchedName && i.originalName && i.originalName !== i.matchedName) {
-      return `  ${num} ${i.originalName} → 比對為 ${code}${i.matchedName} ×${i.quantity}${priceStr}${totalStr}\n    ⚠️ 品名不完全一致，請確認`;
+    const displayName = i.matchedName || i.name || i.originalName || '未命名';
+
+    let line = `  ${num} ${code}${displayName} ×${i.quantity}${priceStr}${totalStr}`;
+
+    // PDF 原文規格小字（RAG 後 matchedName 來自 ERP，spec 保留原文可校對幻覺）
+    if (i.spec && i.spec !== displayName) {
+      line += `\n     📍 規格：${i.spec}`;
+    } else if (i.matchedName && i.originalName && i.originalName !== i.matchedName) {
+      // 舊路徑（文字輸入建單）沒 spec，保留原比對提示
+      line += `\n     ⚠️ 比對為 ERP 標準名，請確認`;
     }
-    return `  ${num} ${code}${displayName} ×${i.quantity}${priceStr}${totalStr}`;
+    return line;
   }).join('\n');
 
   const total = (data.items || []).reduce((s, i) => s + i.quantity * (i.price || 0), 0);
