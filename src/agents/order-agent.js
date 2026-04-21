@@ -210,15 +210,25 @@ function formatOrderSummary(sess) {
     const unit = i.unit || '個';
     const priceStr = i.price > 0 ? ` @NT$${i.price}/${unit}` : ' (價格未填)';
     const totalStr = i.price > 0 ? ` = NT$${i.quantity * i.price}` : '';
-    const displayName = i.matchedName || i.name || i.originalName || '未命名';
+    // displayName 優先順序：matchedName（ERP 標準）> spec（PDF 原文）> name > '未命名'
+    //   避免 matchedName 跟 spec 都空時退回 name = productCode 變成 "[PRO-236] PRO-236"
+    const displayName = i.matchedName || i.spec || i.name || i.originalName || '未命名';
 
     let line = `  ${num} ${code}${displayName} ×${i.quantity}${priceStr}${totalStr}`;
 
-    // PDF 原文規格小字（RAG 後 matchedName 來自 ERP，spec 保留原文可校對幻覺）
-    if (i.spec && i.spec !== displayName) {
+    // 警告層級由強到弱：
+    // (1) ERP 查不到 productCode（PDF 抽到 code 但庫裡沒）→ 最優先警告
+    // (2) PDF 原文規格跟顯示名不同 → 小字顯示供口核
+    // (3) 舊路徑 matchedName vs originalName 不符
+    if (i._codeNotFoundInErp) {
+      line += `\n     ⚠️ ERP 找不到此產品編號，建議先確認或到 ERP 建立`;
+      // 同時顯示規格原文，讓 admin 清楚是什麼商品
+      if (i.spec && i.spec !== displayName) {
+        line += `\n     📍 規格：${i.spec}`;
+      }
+    } else if (i.spec && i.spec !== displayName) {
       line += `\n     📍 規格：${i.spec}`;
     } else if (i.matchedName && i.originalName && i.originalName !== i.matchedName) {
-      // 舊路徑（文字輸入建單）沒 spec，保留原比對提示
       line += `\n     ⚠️ 比對為 ERP 標準名，請確認`;
     }
     return line;

@@ -173,24 +173,30 @@ async function enrichItemsWithRAG(items) {
 
     for (const item of items) {
       const queryCode = (item.productCode || '').trim();
-      // querySpec：PDF schema 新欄位；若沒 spec（來自文字輸入等舊路徑）就 fallback item.name
       const querySpec = (item.spec || item.name || '').trim();
-      const specKept = item.spec || null;  // 保留 PDF 原文規格供 submitOrder 寫 notes
+      const specKept = item.spec || null;
 
-      // Priority：有 productCode → 先精確比對；落空才用 spec 模糊搜
+      // Priority：
+      // (1) 有 productCode 且 PDF 上抽到 → **只**用 productCode 精確比對；查不到就當 ERP 沒此產品，
+      //     保留原 code 讓用戶知道（絕不用 spec 模糊搜撞別的產品，避免誤配到同名代號）
+      // (2) 沒 productCode（如文字建單）→ 才用 spec/name 模糊搜
       let results = [];
+      let usedCodeSearch = false;
       if (queryCode) {
         results = await productSearch.searchProduct(queryCode);
-      }
-      if (results.length === 0 && querySpec) {
+        usedCodeSearch = true;
+      } else if (querySpec) {
         results = await productSearch.searchProduct(querySpec);
       }
       const classified = productSearch.classifyResults(results);
 
+      // candidates 只在「無 productCode」情境接受，避免低信心誤配
+      const acceptCandidate = !usedCodeSearch;
+
       if (classified.autoMatch.length > 0) {
         const matched = classified.autoMatch[0].product;
         enriched.push({
-          name: matched.name,               // 用 ERP 標準名覆蓋 LLM 可能幻覺的原文
+          name: matched.name,
           originalName: querySpec,
           matchedName: matched.name,
           productCode: matched.productId,
@@ -204,7 +210,7 @@ async function enrichItemsWithRAG(items) {
         if (querySpec && querySpec !== matched.name) {
           productSearch.learnAlias(matched.productId, querySpec).catch(() => {});
         }
-      } else if (classified.candidates.length > 0) {
+      } else if (classified.candidates.length > 0 && acceptCandidate) {
         const best = classified.candidates[0].product;
         enriched.push({
           name: best.name,
@@ -220,16 +226,18 @@ async function enrichItemsWithRAG(items) {
         });
       } else {
         enriched.push({
-          name: querySpec,
+          name: querySpec || queryCode || '未命名',
           originalName: querySpec,
           matchedName: null,
-          productCode: queryCode || null,   // LLM 抽到的 code 即使查不到也保留，方便人工追蹤
+          productCode: queryCode || null,
           spec: specKept,
           matchConfidence: 0,
           quantity: item.quantity || 1,
           price: item.price || 0,
           unit: '個',
           _matched: false,
+          // ERP 找不到此 productCode（PDF 上有抽到但 ERP 庫沒有）→ 給 UI 顯示警告用
+          _codeNotFoundInErp: !!queryCode,
         });
       }
     }
